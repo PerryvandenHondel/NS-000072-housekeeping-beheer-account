@@ -34,7 +34,10 @@ const
 	ADS_UF_DONT_EXPIRE_PASSWD 		= 	65536;	// UserAccountControl bit for Password Never Expires
 	//SECS_PER_DAY 					= 	86400;	// Number of seconds per day (24 * 60 * 60 = 86400)
 
-
+	FNAME_EXPORT = 					 	'export.tmp';
+	FNAME_ACTION = 						'action.cmd';
+	FNAME_LOG = 						'log.tsv';
+	
 	
 var
 	//giSecDisable: LongInt;
@@ -311,6 +314,7 @@ begin
 	
 	gsBatchNumber := GetDateFs(false); // + GetTimeFs();
 	
+	{
 	sFolderBatch := GetCurrentDir() + '\' + gsBatchNumber + '\';
 	WriteLn('Making folder: ', sFolderBatch);
 	MakeFolderTree(sFolderBatch);
@@ -347,25 +351,32 @@ begin
 	txtBatch.WriteToFile('');
 	
 	WriteLn('WE ARE HERE!');
+	}
 end; // of procedure ProgInit()
 
 
 
 procedure ProgRun();
+var
+	fe: TextFile;
+	l: AnsiString;
 begin
-	repeat
-		WriteLn('LINE:');
-		tsvExport.ReadLine();
-{
-		ProcessLine(tsvExport.GetCurrentLine(), tsvExport.GetValue('dn'), tsvExport.GetValue('sAMAccountName'), 
-			tsvExport.GetValue('description'), tsvExport.GetValue('userAccountControl'), tsvExport.GetValue('lastLogontimeStamp'), 
-			tsvExport.GetValue('whenCreated'));
-		
-		WriteLn;
-} 
-		WriteLn(tsvExport.GetCurrentLine(), Chr(9), 'dn=', tsvExport.GetValue('dn')); 
-		WriteLn(tsvExport.GetCurrentLine(), Chr(9))
-    until tsvExport.GetEof();
+
+	AssignFile(fe, FNAME_EXPORT);
+	{I+}
+	try 
+		Reset(fe);
+		repeat
+			ReadLn(fe, l);
+			if Length(l) > 0 then
+				WriteLn(l);
+		until Eof(fe);
+		CloseFile(fe);
+	except
+		on E: EInOutError do
+			WriteLn('File ', FNAME_EXPORT, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
+	WriteLn('LAST LINE READ!');
 end; // of procedure ProgRun()
 
 
@@ -377,14 +388,14 @@ var
 	nPercentDelete: Double;
 begin
     // Close the batch file.
-	txtBatch.CloseFile();
+	//txtBatch.CloseFile();
 	
 	// Close the log file.
-	tsvLog.CloseFile();
+	//tsvLog.CloseFile();
 
 	// Close the export file.
-	tsvExport.CloseFile();
-
+	//tsvExport.CloseFile();
+{ 
 	nTotal := tsvExport.GetCurrentLine();
 	nPercentDisable := (giTotalDisable / nTotal) * 100;
 	nPercentDelete := (giTotalDelete / nTotal) * 100;
@@ -395,6 +406,7 @@ begin
 	WriteLn(' Total accounts : ', nTotal:5);
 	WriteLn(' Disabled       : ', giTotalDisable:5, ' (', nPercentDisable:3:2, '%)');
 	WriteLn(' Deleted        : ', giTotalDelete:5, ' (', nPercentDelete:3:2, '%)');
+	}
 end; // of procedure ProgDone()
 	
 	

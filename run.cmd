@@ -7,7 +7,7 @@
 ::
 ::	Script settings
 ::
-set EXPORT_FILE=export.tsv
+set EXPORT_FILE=export.tmp
 
 ::echo .
 echo Export to file %EXPORT_FILE%
