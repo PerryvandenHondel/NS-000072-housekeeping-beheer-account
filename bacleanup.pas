@@ -37,6 +37,7 @@ const
 	FNAME_EXPORT = 					 	'export.tmp';
 	FNAME_ACTION = 						'action.cmd';
 	FNAME_LOG = 						'log.tsv';
+	SEPARATOR_EXPORT = 					#9;		// Separator of export file is a TAB, Chr(9) or #9
 	
 	
 var
@@ -46,10 +47,11 @@ var
 	giTotalDelete: integer;
 	
 	gdtNow: TDateTime;
-	tsvExport: CTextSeparated;	
-	tsvLog: CTextSeparated;
-	txtBatch: CTextFile;
+	//tsvExport: CTextSeparated;	
+	//tsvLog: CTextSeparated;
+	//txtBatch: CTextFile;
 	gsBatchNumber: string; 			// Contains the batch number in format YYYYMMDDHHMMSS
+	garrHeader: TStringArray;
 
 
 
@@ -167,14 +169,14 @@ var
 begin
 	// First update the description field Description
 	sCmd := 'dsmod.exe user "' + sDn + '" -desc "BA HOUSEKEEPING ' + gsBatchNumber + ', ' + sDesc + '"';
-	txtBatch.WriteToFile(sCmd);
+	//txtBatch.WriteToFile(sCmd);
 
 	// Secondly disable the account using DSMOD.EXE to disable the account
 	sCmd := 'dsmod.exe user "' + sDn + '" -disabled yes';
-	txtBatch.WriteToFile(sCmd);
+	//txtBatch.WriteToFile(sCmd);
 	
 	// Add a blank line
-	txtBatch.WriteToFile('');
+	//txtBatch.WriteToFile('');
 end; // of procedure WriteDisable
 
 
@@ -186,13 +188,13 @@ begin
 	sCmd := sCmd + '-tdcs -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
 	sCmd := sCmd + '-tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
 	sCmd := sCmd + '>>userinfo\' + sSam + '.txt';
-	txtBatch.WriteToFile(sCmd);
+	//txtBatch.WriteToFile(sCmd);
 	
 	sCmd := 'dsrm.exe "' + sDn + '" -noprompt';
-	txtBatch.WriteToFile(sCmd);
+	//txtBatch.WriteToFile(sCmd);
 	
 	// Add a blank line
-	txtBatch.WriteToFile('');
+	//txtBatch.WriteToFile('');
 end; // of procedure WriteDelete
 
 
@@ -208,7 +210,7 @@ begin
 	// Get the Support Organization for an SAM account.
 	sSupportOrg := GetSupportOrg(sSam);
 	
-	tsvLog.WriteToFile(sDomain + #9 + sSupportOrg + #9 + sSam + #9 + DateTimeToStr(dtCalc) + #9 + sWhichUsed + #9 + IntToStr(iAgoDays) + #9 + sAction + #9 + sMessage);
+	//tsvLog.WriteToFile(sDomain + #9 + sSupportOrg + #9 + sSam + #9 + DateTimeToStr(dtCalc) + #9 + sWhichUsed + #9 + IntToStr(iAgoDays) + #9 + sAction + #9 + sMessage);
 end; // of procedure WriteToLog
 
 
@@ -355,21 +357,64 @@ begin
 end; // of procedure ProgInit()
 
 
+function GetPosOfHeaderItem(searchHeaderItem: string): integer;
+{
+	Get the position of 'searchHeaderItem' in  the header array 'garrHeader'.
+	Returns a integer of the position when found.
+	Returns  -1 when no found.
+}
+var
+	x: integer;
+	r: integer;
+begin
+	r := -1;
+	for x := 0 to Length(garrHeader) do
+	begin
+		//WriteLn(Chr(9), x, chr(9), headerArray[x]);
+		if searchHeaderItem = garrHeader[x] then
+			r := x;
+	end;
+	GetPosOfHeaderItem := r;
+end; // of function CTextSeparated.GetPosOfHeaderItem
+
 
 procedure ProgRun();
 var
 	fe: TextFile;
-	l: AnsiString;
+	strLine: AnsiString;
+	arrLine: TStringArray;
+	
+	x: integer;
+	intLine: integer;
+	
 begin
-
 	AssignFile(fe, FNAME_EXPORT);
 	{I+}
+	intLine := 0;
 	try 
 		Reset(fe);
 		repeat
-			ReadLn(fe, l);
-			if Length(l) > 0 then
-				WriteLn(l);
+			Inc(intLine);
+			ReadLn(fe, strLine);
+			if intLine = 1 then
+			begin
+				// Put the header in as a array of string in garrHeader
+				garrHeader := SplitString(strLine, SEPARATOR_EXPORT);
+				
+				WriteLn('HEADER POSITIONS:');
+				For x := 0 To High(garrHeader) do
+					WriteLn(#9, x, ':', #9, garrHeader[x]);				
+			end;
+			Writeln('FOUND userAccountControl AT: ', GetPosOfHeaderItem('userAccountControl'));
+			
+			
+			WriteLn(intLine, #9, strLine);
+			arrLine := SplitString(strLine, #9);
+			for x := 0 to High(arrLine) do
+			begin
+				WriteLn(#9, x, ':', #9, arrLine[x]);
+			end;
+			WriteLn;
 		until Eof(fe);
 		CloseFile(fe);
 	except
