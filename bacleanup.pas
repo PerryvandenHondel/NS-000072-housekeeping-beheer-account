@@ -16,14 +16,16 @@
 	=====
 	
 	Program
-		ProgInit()
-		ProgRun()
-			Step1Export();
-				ProcessDomain()
-					CreateExportAccount()
-					CreateExportDcList()
-					CreateExportLastLogon()
-		ProgDone()
+		ProgInit
+		ProgRun
+			Step1Export
+				ProcessDomain
+					CreateExportAccount
+					CreateExportDcList
+					CreateExportLastLogon
+			Step2Process
+				GetPosOfHeaderItem
+		ProgDone
 
 	
 	
@@ -37,6 +39,9 @@
 		procedure ProgInit();
 		procedure ProgRun();
 		procedure Step1Export();
+		procedure Step2Process();
+		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
+		function GetReadLastLogon(strDn: string): TDateTime;
 	
 }
 
@@ -62,11 +67,11 @@ uses
 
 	
 const	
-	DAYS_DISABLE 					=	90;		// Disable accounts older then...
-	DAYS_DELETE 					=	180;	// Delete accounts older then...
-	ADS_UF_ACCOUNTDISABLE			=	2;		// UserAccountControl bit for account disable
-	ADS_UF_DONT_EXPIRE_PASSWD 		= 	65536;	// UserAccountControl bit for Password Never Expires
-	//SECS_PER_DAY 					= 	86400;	// Number of seconds per day (24 * 60 * 60 = 86400)
+	DAYS_DISABLE =						90;		// Disable accounts older then...
+	DAYS_DELETE =						180;	// Delete accounts older then...
+	ADS_UF_ACCOUNTDISABLE =				2;		// UserAccountControl bit for account disable
+	ADS_UF_DONT_EXPIRE_PASSWD = 		65536;	// UserAccountControl bit for Password Never Expires
+	//SECS_PER_DAY = 					86400;	// Number of seconds per day (24 * 60 * 60 = 86400)
 
 	FNAME_EXPORT = 					 	'export.tmp';
 	FNAME_ACTION = 						'action.cmd';
@@ -75,7 +80,7 @@ const
 	FNAME_LASTLOGON = 					'export-last-logon.tmp'; 
 	FNAME_CONFIG = 						'bacleanup.conf';
 	FNAME_LOG = 						'log.tsv';
-	SEPARATOR_EXPORT = 					#9;		// Separator of export file is a TAB, Chr(9) or #9
+	SEPARATOR = 						#9;		// Separator of export file is a TAB, Chr(9) or #9
 	
 	
 var
@@ -94,6 +99,7 @@ var
 	gintSecondsDelete: integer;
 	strDn: string;
 	dtLatest: TDateTime;
+	
 
 
 function GetDnsDomainFromDn(sDn: string): string;
@@ -515,26 +521,6 @@ begin
 end; // of function GetLatestLogonDate
 
 
-function GetPosOfHeaderItem(searchHeaderItem: string): integer;
-{
-	Get the position of 'searchHeaderItem' in  the header array 'garrHeader'.
-	Returns a integer of the position when found.
-	Returns  -1 when no found.
-}
-var
-	x: integer;
-	r: integer;
-begin
-	r := -1;
-	for x := 0 to Length(garrHeader) do
-	begin
-		//WriteLn(Chr(9), x, chr(9), headerArray[x]);
-		if searchHeaderItem = garrHeader[x] then
-			r := x;
-	end;
-	GetPosOfHeaderItem := r;
-end; // of function CTextSeparated.GetPosOfHeaderItem
-
 
 procedure PerformAction(strDn: string; strLastLogon: string; strCreated: string; intUserAccountControl: integer);
 var
@@ -588,6 +574,130 @@ end; // of procedure PerformAction().
 
 
 
+function GetReadLastLogon(strSearchDn: string): TDateTime;
+{
+	Read the FNAME_LASTLOGON file and returns the latest lastLogon from a strSearchDn
+}
+var
+	f: TextFile;
+	intLineCount: integer;
+	strLine: AnsiString;
+begin
+	intLineCount := 0;
+	
+	AssignFile(f, FNAME_LASTLOGON);
+	{I+}
+	try 
+		Reset(f);
+		repeat
+			Inc(intLineCount);
+			ReadLn(f, strLine);
+			if (LeftStr(strLine, 3) = 'CN=') then
+			begin
+				// Skip all lines that are not an Distinguished Name (DN) (starting with 'CN=').
+				//WriteLn(intLineCount, ': ', strLine);
+				if Pos(strSearchDn, strLine) > 0 then
+				begin
+					WriteLn('*** FOUND: ', strSearchDn, ' ***');
+					WriteLn('strLine=', strLine);
+				end;
+			end;
+		until Eof(f);
+		CloseFile(f);
+	except
+		on E: EInOutError do
+			WriteLn('File ', FNAME_LASTLOGON, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
+end; // of function GetReadLastLogon
+
+
+function GetPosOfHeaderItem(searchHeaderItem: string): integer;
+{
+	Get the position of 'searchHeaderItem' in  the header array 'garrHeader'.
+	Returns a integer of the position when found.
+	Returns  -1 when no found.
+}
+var
+	x: integer;
+	//r: integer;
+begin
+	GetPosOfHeaderItem := -1;
+	for x := 0 to Length(garrHeader) do
+	begin
+		//WriteLn(#9, x, #9, searchHeaderItem, #9, garrHeader[x]);
+		if searchHeaderItem = garrHeader[x] then
+		begin
+			GetPosOfHeaderItem := x;
+			Break;
+		end;
+	end;
+end; // of function GetPosOfHeaderItem()
+
+
+
+procedure Step2Process();
+var
+	arrLine: TStringArray;
+	f: TextFile;
+	intLineCount: integer;
+	intPosDn: integer;
+	intPosCreated: integer;
+	intPosUac: integer;
+	strLine: AnsiString;
+	strDn: string;
+	dtCreated: TDateTime;
+	intUac: integer;
+begin
+	WriteLn;
+	WriteLn(LeftStr('Step2Process():' + StringOfChar('-', 80), 80));
+	
+	intLineCount := 0;
+	
+	AssignFile(f, FNAME_ACCOUNT);
+	{I+}
+	try 
+		Reset(f);
+		repeat
+			Inc(intLineCount);
+			ReadLn(f, strLine);
+			//WriteLn(intLineCount, ': ', strLine);
+			
+			if intLineCount = 1 then
+			begin
+			
+				WriteLn('HEADER!!', intLineCount, ': ', strLine);
+				SetLength(garrHeader, 0); // Initialize the array space for the header.
+				garrHeader := SplitString(strLine, SEPARATOR); // Split the line into an garrHeader array.
+				
+				intPosDn := GetPosOfHeaderItem('dn');
+				intPosCreated := GetPosOfHeaderItem('whenCreated');
+				intPosUac := GetPosOfHeaderItem('userAccountControl');
+			end
+			
+			else
+			//if (intLineCount > 1) and (LeftStr(strLine, 3) = 'CN=') then
+			begin
+				// Only process lines that start with 'CN='.
+				//WriteLn(intLineCount, ': ', strLine);
+				SetLength(arrLine, 0);  // Initialize the array for the current line.
+				arrLine := SplitString(strLine, SEPARATOR);
+				
+				strDn := arrLine[intPosDn];
+				dtCreated := StrToDateTime(arrLine[intPosCreated]);
+				intUac := StrToInt(arrLine[intPosUac]);
+				
+				WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
+			end;
+		until Eof(f);
+		CloseFile(f);
+	except
+		on E: EInOutError do
+			WriteLn('File ', FNAME_ACCOUNT, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
+end; // of procedure Step2Process();
+
+
+
 procedure CreateExportLastLogon(strFnameDcList: string; strFnameLastLogon: string; strBaseOu: string);
 {
 	Check on each DC found in strFnameDcList of strRootDse the LastLogon value for all accounts found in strBaseOu,
@@ -638,7 +748,7 @@ begin
 		CloseFile(f);
 	except
 		on E: EInOutError do
-			WriteLn('File ', FNAME_CONFIG, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+			WriteLn('File ', strFnameDcList, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
 	end;
 end; // of procedure CreateExportLastLogon().
 
@@ -752,12 +862,23 @@ begin
 end; // of procedure Step1Export().
 
 
+
 procedure ProgTest();
+var
+	strDn: string;
 begin
 	//WriteLn(GetLatestLogonDate('CN=HP_Ian.Webermann,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl'));
-	strDn := 'CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl';
-	dtLatest := GetLatestLogonDate(strDn);
-	WriteLn(' *** Latest logon date time for:', strDn, ': ', DateTimeToStr(dtLatest));
+	//strDn := 'CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl';
+	//dtLatest := GetLatestLogonDate(strDn);
+	//WriteLn(' *** Latest logon date time for:', strDn, ': ', DateTimeToStr(dtLatest));
+	
+	
+	strDn := 'CN=KPN_P.Krishnachar,OU=KPN,OU=Beheer,DC=test,DC=ns,DC=nl';
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn)));
+	
+	strDn := 'CN=BEH_Gilroy.Weiland,OU=BEH,OU=Beheer,DC=test,DC=ns,DC=nl';
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn)));
+	
 end; // of procedure ProgTest()
 
 
@@ -784,21 +905,22 @@ begin
 	DeleteFile(FNAME_ACCOUNT);
 	DeleteFile(FNAME_LASTLOGON);
 	
-	Step1Export();
-	
-	WriteLn('Program completed!');
+	Step1Export();		// Step 1 Exports all the data to files.
+	Step2Process();		// Step 2 Processes these files.
 end; // of procedure ProgRun()
 
 
 
 procedure ProgDone();
 begin
+	WriteLn('Program completed!');
 end; // of procedure ProgDone()
 	
 
 
 begin
 	ProgInit();
-	ProgRun();
+	//ProgRun();
+	ProgTest();
 	ProgDone();
 end. // of program BACleanup
