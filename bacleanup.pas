@@ -1,9 +1,42 @@
 {
 	Beheer Accounts Cleanup
 
+	
+	
+	VERSION:
+	========
+	
 	Version		Date		Author		Description
 	-------		---------	----------	----------------------------------
 	04			2015-01-08	PVDH		Initial version in Pascal
+
+
+
+	FLOW:
+	=====
+	
+	Program
+		ProgInit()
+		ProgRun()
+			Step1Export();
+				ProcessDomain()
+					CreateExportAccount()
+					CreateExportDcList()
+					CreateExportLastLogon()
+		ProgDone()
+
+	
+	
+	PRCOEDURES AND FUNCTIONS:
+	=========================
+	
+		procedure CreateExportAccount(strFnameAccount: string; strDomainNetbios: string; strBaseOu: string);
+		procedure CreateExportDcList(strFnameDcList: string; strRootDn: string);
+		procedure CreateExportLastLogon(strFnameLastLogon: string; strRootDse: string; strBaseOu: string);
+		procedure ProgDone();
+		procedure ProgInit();
+		procedure ProgRun();
+		procedure Step1Export();
 	
 }
 
@@ -19,6 +52,7 @@ program BACleanup;
 
 uses
 	DateUtils,
+	Process,
 	SysUtils,
 	StrUtils,
 	UTextFile,
@@ -36,6 +70,10 @@ const
 
 	FNAME_EXPORT = 					 	'export.tmp';
 	FNAME_ACTION = 						'action.cmd';
+	FNAME_DCLIST = 						'export-dc-list.tmp';
+	FNAME_ACCOUNT = 					'export-account.tmp';
+	FNAME_LASTLOGON = 					'export-last-logon.tmp'; 
+	FNAME_CONFIG = 						'bacleanup.conf';
 	FNAME_LOG = 						'log.tsv';
 	SEPARATOR_EXPORT = 					#9;		// Separator of export file is a TAB, Chr(9) or #9
 	
@@ -52,10 +90,13 @@ var
 	//txtBatch: CTextFile;
 	gsBatchNumber: string; 			// Contains the batch number in format YYYYMMDDHHMMSS
 	garrHeader: TStringArray;
+	gintSecondsDisable: integer;
+	gintSecondsDelete: integer;
+	strDn: string;
+	dtLatest: TDateTime;
 
 
-
-function GetDomainFromDn(sDn: string): string;
+function GetDnsDomainFromDn(sDn: string): string;
 {
 	Extract the DNS domain name from a DN
 	
@@ -66,7 +107,7 @@ var
 	p: integer;
 	r: string;
 begin
-	//WriteLn('GetDomainFromDn(): ', sDn);
+	//WriteLn('GetDnsDomainFromDn(): ', sDn);
 	p := Pos('DC=', sDn);
 	//WriteLn(p);
 	r := RightStr(sDn, length(sDn) - p + 1);
@@ -75,8 +116,28 @@ begin
 	r := ReplaceText(r, 'DC=', '');
 	r := ReplaceText(r, ',', '.');
 	
-	GetDomainFromDn := r;
-end; // of function GetDomainFromDn
+	GetDnsDomainFromDn := r;
+end; // of function GetDnsDomainFromDn
+
+
+function GetRootDseFromDn(sDn: string): string;
+{
+	Extract the RootDse name from a DN
+	
+	CN=Jurgen.Caspers,OU=Normal,OU=Accounts,OU=RBAC,DC=REC,DC=NSINT > DC=REC,DC=nsint
+}
+var
+	p: integer;
+	r: string;
+begin
+	//WriteLn('GetRootDseFromDn(): ', sDn);
+	p := Pos('DC=', sDn);
+	//WriteLn(p);
+	r := RightStr(sDn, length(sDn) - p + 1);
+	//WriteLn(r);
+		
+	GetRootDseFromDn := r;
+end; // of function GetRootDseFromDn
 
 
 
@@ -206,7 +267,7 @@ var
 	sSupportOrg: string;
 begin
 	// Get the DNS domain name from a DN
-	sDomain := GetDomainFromDn(sDn);
+	sDomain := GetDnsDomainFromDn(sDn);
 	// Get the Support Organization for an SAM account.
 	sSupportOrg := GetSupportOrg(sSam);
 	
@@ -255,7 +316,6 @@ begin
 	end;	
 	
 
-	
 	iAgeDay := DaysBetween(gdtNow, dtCalc);
 	//iAgeDay := iAgeSec Mod SECS_PER_DAY;
 	
@@ -302,59 +362,157 @@ begin
 	WriteLn('No action needed');
 end;  // of procedure ProcessLine
 
-	
 
-procedure ProgInit();
+function DateDiffSec(Date1, Date2: TDateTime): int64;
+{
+	Calculate the number of seconds between 2 dates.
+	
+	Result:
+		< 0		Date2 is newer then Date1
+		> 0		Date1 is newer then Date2
+		= 0		Date1 is the same as Date2
+}
+var
+	r: integer;
+begin
+	r := Trunc(86400.0 * (Date1 - Date2)); // Number of seconds between 2 dates
+	WriteLn('DateDiffSec(): Date1=', DateTimeToStr(Date1), ' - Date2=', DateTimeToStr(Date2), ' = ', r);
+	DateDiffSec := r;
+end; // of function DateDiffSec().
+
+
+function GetLatestLogonDatePerDc(strFNameLastLogon: string; strHostname: string; strDn: string): TDateTime;
 
 var
-	sFolderBatch: string;
-	
+	c: string;
+	f: TextFile;
+	strLine: string;
+	p: TProcess;
+	r: TDateTime;
+	strLastLogonDateTime: string;
 begin
-	gdtNow := Now();
+	c := 'adfind.exe -h ' + strHostname + ' -b ' + EncloseDoubleQuote(strDn) + ' lastLogon -csv -nocsvq -nodn -nocsvheader -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" >>' + strFNameLastLogon;
 	
-	WriteLn('Now: ' + DateTimeToStr(gdtNow));
+	WriteLn;
+	WriteLn('GetLatestLogonDatePerDc(): ', c);
+	p := TProcess.Create(nil);
+	p.Executable := 'cmd.exe'; 
+	p.Parameters.Add('/c ' + c);
+	p.Options := [poWaitOnExit, poUsePipes];
+	p.Execute;		// Execute the command.
+		
+	p.Destroy;
 	
-	gsBatchNumber := GetDateFs(false); // + GetTimeFs();
+	// Set the default return value to 0
+	r := 0;
+	// Open the text file and read the lines from it.
+	AssignFile(f, strFNameLastLogon);
+	{I+}
+	try
+		Reset(f);
+		repeat
+			ReadLn(f, strLine);
+			if Pos('>lastLogon: ', strLine) > 0 then
+			begin
+				strLastLogonDateTime := RightStr(strLine, 19); // Removed '>lastLogon: '.
+				if strLastLogonDateTime = '0000-00-00 00:00:00' then
+					// The value retrieved from the DC is a blank, So return 0
+					r := 0
+				else
+					r := StrToDateTime(strLastLogonDateTime);
+			end
+		until Eof(f);
+		CloseFile(f);
+	except
+		on E: EInOutError do
+			WriteLn('File ', strFNameLastLogon, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
 	
-	{
-	sFolderBatch := GetCurrentDir() + '\' + gsBatchNumber + '\';
-	WriteLn('Making folder: ', sFolderBatch);
-	MakeFolderTree(sFolderBatch);
+	WriteLn('GetLatestLogonDatePerDc(): r=', DateTimeToStr(r));
 	
-	WriteLn('Batch output in folder: ' + sFolderBatch);
+	GetLatestLogonDatePerDc := r;
+end; // of function GetLatestLogonDatePerDc
+
+
+function GetLatestLogonDate(strAccountDn: string): TDateTime;
+{
+	adfind -b "DC=prod,DC=ns,DC=nl" -sc dclist
 	
-	giTotalDisable := 0;
-	giTotalDelete := 0;
+	adfind -h NS00DC012.prod.ns.nl -b CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl lastLogon -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%"
+}
+const
+	FNAME_TMP_DCLIST = 			'dclist.tmp';
+	FNAME_TMP_LASTLOGON = 		'lastlogon.tmp';
+var
+	p: TProcess;
+	p2: TProcess;
 	
-	WriteLn('Trying to open export.tsv');
-	tsvExport := CTextSeparated.Create('export.tsv');
-    tsvExport.OpenFileRead();
-	tsvExport.SetSeparator(Chr(9)); // Tab char as separator
-	WriteLn('Open file: ', tsvExport.GetPath(), ' status = ', BoolToStr(tsvExport.GetStatus, 'OPEN', 'CLOSED'));
-	tsvExport.ReadHeader();
+	c: string;
+	c2: string;
+	d: string;
+	f: TextFile;
+	strFqdn: string;
+	strLine: string;
+	r: TDateTime;
+	strLastLogonDateTime: string;
+	dtFromDc: TDateTime; 
+	intSeconds: int64;
+begin
+	r := 0;
 	
-	WriteLn('Trying to open log.tsv');
-	// Open the output file.
-	tsvLog := CTextSeparated.Create(sFolderBatch + 'log.tsv');
-	tsvLog.OpenFileWrite();
-	// Write the header for the output file.
-	tsvLog.WriteToFile('Domain'+Chr(9)+'SupportOrg'+Chr(9)+'Account'+Chr(9)+'CalcDateTime'+Chr(9)+'UsingDateTime'+Chr(9)+'DaysAgo'+Chr(9)+'Action'+Chr(9)+'Message');
+	WriteLn('GetLatestLogonDate(): ', strAccountDn);
 	
-	WriteLn('Trying to open action.cmd');
-	// Open the batch file.
-	txtBatch := CTextFile.Create(sFolderBatch + 'action.cmd.txt');
-    txtBatch.OpenFileWrite();
-    txtBatch.WriteToFile('@echo off');
-    txtBatch.WriteToFile('::');
-    txtBatch.WriteToFile(':: Batch file with command to execute to clean-up beheeraccounts');
-    txtBatch.WriteToFile('::');
-	txtBatch.WriteToFile('');
-	txtBatch.WriteToFile('if not exist userinfo md userinfo');
-	txtBatch.WriteToFile('');
+	d := GetRootDseFromDn(strAccountDn);
+	c := 'adfind.exe -b ' + EncloseDoubleQuote(d) + ' -sc dclist >' + FNAME_TMP_DCLIST;
+
+	WriteLn;
+	WriteLn('GetLatestLogonDate(): ', c);
 	
-	WriteLn('WE ARE HERE!');
-	}
-end; // of procedure ProgInit()
+	// Setup the process to be executed.
+	p := TProcess.Create(nil);
+	p.Executable := 'cmd.exe'; 
+    p.Parameters.Add('/c ' + c);
+	// 1) Wait until the process is finished and 
+	// 2) do not show output to the console.
+	p.Options := [poWaitOnExit, poUsePipes]; 
+	p.Execute;		// Execute the command.
+	
+	p.Destroy;		// Destroy the process.
+
+	// Delete any existing file before.
+	DeleteFile(FNAME_TMP_LASTLOGON);
+	
+	// Open the text file and read the lines from it.
+	AssignFile(f, FNAME_TMP_DCLIST);
+	{I+}
+	try
+		Reset(f);
+		repeat
+			ReadLn(f, strFqdn);
+			WriteLn('Working on: ', strFqdn);
+			
+			// -csv -nocsvq -nodn -nocsvheader
+			c2 := 'adfind.exe -h ' + strFqdn + ' -b ' + EncloseDoubleQuote(strAccountDn) + ' lastLogon -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" >>' + FNAME_TMP_LASTLOGON;
+	
+			p2 := TProcess.Create(nil);
+			p2.Executable := 'cmd.exe'; 
+			p2.Parameters.Add('/c ' + c2);
+			p2.Options := [poWaitOnExit, poUsePipes];
+			p2.Execute;		// Execute the command.
+		
+			p2.Destroy;
+			
+			//dtFromDc := GetLatestLogonDatePerDc(FNAME_TMP_LASTLOGON, strFqdn, strAccountDn);
+		until Eof(f);
+		CloseFile(f);
+		
+		WriteLn('File ', FNAME_TMP_LASTLOGON, ' created.');
+	except
+		on E: EInOutError do
+			WriteLn('File ', FNAME_TMP_DCLIST, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
+	GetLatestLogonDate := r;
+end; // of function GetLatestLogonDate
 
 
 function GetPosOfHeaderItem(searchHeaderItem: string): integer;
@@ -378,98 +536,269 @@ begin
 end; // of function CTextSeparated.GetPosOfHeaderItem
 
 
-procedure ProgRun();
+procedure PerformAction(strDn: string; strLastLogon: string; strCreated: string; intUserAccountControl: integer);
 var
-	fe: TextFile;
-	strLine: AnsiString;
-	arrLine: TStringArray;
-	
-	x: integer;
-	intLine: integer;
-	
+	dtAction: TDateTime;
+	dtActionOnTheSecond: TDateTime;
+	intActionSecondsAgo: integer;
+	intActionDaysAgo: integer;
 begin
-	AssignFile(fe, FNAME_EXPORT);
+	WriteLn;
+	WriteLn('PerformAction():');
+	WriteLn('  DN              : ', strDn);
+	WriteLn('  Last logon      : ', strLastLogon);
+	WriteLn('  Created         : ', strCreated);
+	WriteLn('  UAC             : ', intUserAccountControl);
+	
+	gintSecondsDisable := DAYS_DISABLE * 24 * 60 * 60;
+	gintSecondsDelete := DAYS_DELETE * 24 * 60 * 60;
+	
+	//WriteLn('gintSecondsDisable=', gintSecondsDisable);
+	//WriteLn('gintSecondsDelete=', gintSecondsDelete);
+	
+	// If the last logon conains no data, is empty.
+	// Then use the creation date of the last action of the account.
+	if Length(strLastLogon) = 0 then
+		dtAction := StrToDateTime(strCreated) // Convert the string with a date time to a number to use in calculations.
+	else
+		dtAction := StrToDateTime(strLastLogon);
+	
+	WriteLn('DTACTION=', DateTimeToStr(dtAction));
+	
+	intActionSecondsAgo := DateDiffSec(Now(), dtAction); // Calculate the number of seconds ago to the dtAction date time.
+	intActionDaysAgo := DaysBetween(Now(), dtAction);
+	
+	WriteLn('intActionSecondsAgo=', intActionSecondsAgo);
+	
+	if intActionSecondsAgo > gintSecondsDelete then
+	begin
+		WriteLn('DELETE, the account is not used for ', intActionDaysAgo, ' days, that''s over the threshold of ', DAYS_DELETE, ' days.');
+		
+		dtActionOnTheSecond := GetLatestLogonDate(strDn);
+		WriteLn('dtActionOnTheSecond=', DateTimeToStr(dtActionOnTheSecond));
+	end
+	else
+	begin
+		if intActionSecondsAgo > gintSecondsDisable then
+		begin
+			WriteLn('DISABLE, the account is not used for ', intActionDaysAgo, ' days, that''s over the threshold of ', DAYS_DISABLE, ' days.');
+		end;
+	end; // of if intActionSecondsAgo > gintSecondsDelete then
+end; // of procedure PerformAction().
+
+
+
+procedure CreateExportLastLogon(strFnameDcList: string; strFnameLastLogon: string; strBaseOu: string);
+{
+	Check on each DC found in strFnameDcList of strRootDse the LastLogon value for all accounts found in strBaseOu,
+	store in strFnameLastLogon.
+}
+var
+	f: TextFile;
+	strLine: string;
+	p: TProcess;
+	c: AnsiString;
+begin
+	WriteLn;
+	WriteLn(LeftStr('CreateExportLastLogon():' + StringOfChar('-', 80), 80));
+	WriteLn('     strFnameDcList : ', strFnameDcList);		// File name of dc list
+	WriteLn('  strFnameLastLogon : ', strFnameLastLogon);	// File of last logons
+	WriteLn('          strBaseOu : ', strBaseOu);			// OU=accounts,DC=domain,DC=ext
+	
+	AssignFile(f, strFnameDcList);
 	{I+}
-	intLine := 0;
 	try 
-		Reset(fe);
+		Reset(f);
 		repeat
-			Inc(intLine);
-			ReadLn(fe, strLine);
-			if intLine = 1 then
-			begin
-				// Put the header in as a array of string in garrHeader
-				garrHeader := SplitString(strLine, SEPARATOR_EXPORT);
-				
-				WriteLn('HEADER POSITIONS:');
-				For x := 0 To High(garrHeader) do
-					WriteLn(#9, x, ':', #9, garrHeader[x]);				
-			end;
-			Writeln('FOUND userAccountControl AT: ', GetPosOfHeaderItem('userAccountControl'));
+			ReadLn(f, strLine);
+			WriteLn(strLine);
 			
+			// Export from all DC's of domain strBaseOu the lastLogon date time value.
 			
-			WriteLn(intLine, #9, strLine);
-			arrLine := SplitString(strLine, #9);
-			for x := 0 to High(arrLine) do
-			begin
-				WriteLn(#9, x, ':', #9, arrLine[x]);
-			end;
-			WriteLn;
-		until Eof(fe);
-		CloseFile(fe);
+			c := 'adfind.exe ';
+			c := c + '-h ' + EncloseDoubleQuote(strLine) + ' ';
+			c := c + '-b ' + EncloseDoubleQuote(strBaseOu) + ' ';
+			c := c + '-f "' + #38 + '(objectClass=user)(objectCategory=person)" ';
+			c := c + 'lastLogon ';
+			c := c + '-jtsv -csvnoq ';
+			c := c + '-tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" ';
+			c := c + '>>' + strFnameLastLogon;
+			WriteLn(c);
+			
+			// Setup the process to be executed.
+			p := TProcess.Create(nil);
+			p.Executable := 'cmd.exe'; 
+			p.Parameters.Add('/c ' + c);
+			// 1) Wait until the process is finished and 
+			// 2) do not show output to the console.
+			p.Options := [poWaitOnExit, poUsePipes]; 
+			p.Execute;		// Execute the command.
+			
+		until Eof(f);
+		CloseFile(f);
 	except
 		on E: EInOutError do
-			WriteLn('File ', FNAME_EXPORT, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+			WriteLn('File ', FNAME_CONFIG, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
 	end;
-	WriteLn('LAST LINE READ!');
+end; // of procedure CreateExportLastLogon().
+
+
+
+procedure CreateExportDcList(strFnameDcList: string; strRootDn: string);
+{
+	Create a file with all the FQDN's of DC servers of domain specified in strRootDn.
+}
+var
+	p: TProcess;
+	c: AnsiString;
+begin
+	WriteLn;
+	WriteLn(LeftStr('CreateExportDcList():' + StringOfChar('-', 80), 80));
+	c := 'adfind.exe -b ' + EncloseDoubleQuote(strRootDn) + ' -sc dclist >' + FNAME_DCLIST;
+
+	WriteLn('c=', c);
+	
+	// Setup the process to be executed.
+	p := TProcess.Create(nil);
+	p.Executable := 'cmd.exe'; 
+    p.Parameters.Add('/c ' + c);
+	// 1) Wait until the process is finished and 
+	// 2) do not show output to the console.
+	p.Options := [poWaitOnExit, poUsePipes]; 
+	p.Execute;		// Execute the command.
+end; // of procedure CreateExportDcList();
+
+
+
+procedure CreateExportAccount(strFnameAccount: string; strDomainNetbios: string; strBaseOu: string);
+{
+	Create a TSV with the account values in strFnameAccount of domain strDomainNetbios, started from strBaseOu.
+}
+var
+	p: TProcess;
+	c: AnsiString;
+begin
+	WriteLn;
+	WriteLn(LeftStr('CreateExportAccount():' + StringOfChar('-', 80), 80));
+	
+	// adfind.exe -b %%c,%%a -binenc -f "&(objectClass=user)(objectCategory=person)" sAMAccountName displayName givenName sn cn title description homeDirectory profilePath userAccountControl lastLogontimeStamp pwdLastSet whenCreated -jtsv -tdcs -tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" >>%LOGPATH%
+
+	c := 'adfind.exe -b ' + EncloseDoubleQuote(strBaseOu) + ' ';
+	c := c + '-f "' + #38 + '(objectClass=user)(objectCategory=person)" ';
+	c := c + 'sAMAccountName description userAccountControl userPrincipalName lastLogontimeStamp whenCreated ';
+	c := c + '-jtsv -csvnoq ';
+	c := c + '-tdcgt -tdcfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" ';
+	c := c + '-tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" ';
+	c := c + '>>' + strFnameAccount;
+
+	WriteLn(c);
+	
+	p := TProcess.Create(nil);
+	p.Executable := 'cmd.exe'; 
+    p.Parameters.Add('/c ' + c);
+	// 1) Wait until the process is finished and 
+	// 2) do not show output to the console.
+	p.Options := [poWaitOnExit, poUsePipes]; 
+	p.Execute;		// Execute the command.
+	
+	p.Destroy;		// Destroy the process.
+end; // of procedure CreateExportAccount().
+
+
+
+procedure ProcessDomain(strFnameAccount: string; strRootDn: string; strBaseOu: string; strDomainNetbios: string);
+begin
+	WriteLn;
+	WriteLn(LeftStr('ProcessDomain():' + StringOfChar('-', 80), 80));
+	WriteLn('   strFnameAccount : ', strFnameAccount);		// File name of accounts
+	WriteLn('        strRootDse : ', strRootDn);			// DC=domain,DC=ext
+	WriteLn('         strBaseOu : ', strBaseOu);			// OU=accounts,DC=domain,DC=ext
+	WriteLn('  strDomainNetbios : ', strDomainNetbios);		// DOMAINNAME
+	
+	CreateExportAccount(FNAME_ACCOUNT, strDomainNetbios, strBaseOu);
+	CreateExportDcList(FNAME_DCLIST, strRootDn);
+	CreateExportLastLogon(FNAME_DCLIST, FNAME_LASTLOGON, strBaseOu);
+	
+end; // of procedure ProcessDomain()
+
+
+
+procedure Step1Export();
+var
+	f: TextFile;
+	strLine: string;
+	arrLine: TStringArray;
+begin
+	WriteLn;
+	WriteLn(LeftStr('Step1Export():' + StringOfChar('-', 80), 80));
+	
+	AssignFile(f, FNAME_CONFIG);
+	{I+}
+	try 
+		Reset(f);
+		repeat
+			// Process  every line in the .conf file.
+			ReadLn(f, strLine);
+			WriteLn(strLine);
+			
+			arrLine := SplitString(strLine, '|');
+			ProcessDomain(FNAME_ACCOUNT, arrLine[0], arrLine[1] + ',' + arrLine[0], arrLine[2]);
+		until Eof(f);
+		CloseFile(f);
+	except
+		on E: EInOutError do
+			WriteLn('File ', FNAME_CONFIG, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
+	end;
+end; // of procedure Step1Export().
+
+
+procedure ProgTest();
+begin
+	//WriteLn(GetLatestLogonDate('CN=HP_Ian.Webermann,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl'));
+	strDn := 'CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl';
+	dtLatest := GetLatestLogonDate(strDn);
+	WriteLn(' *** Latest logon date time for:', strDn, ': ', DateTimeToStr(dtLatest));
+end; // of procedure ProgTest()
+
+
+
+procedure ProgInit();
+var
+	sFolderBatch: string;
+begin
+	gdtNow := Now();
+	
+	WriteLn('Now: ' + DateTimeToStr(gdtNow));
+	
+	gsBatchNumber := GetDateFs(false); // + GetTimeFs();
+end; // of procedure ProgInit()
+
+
+
+procedure ProgRun();
+begin
+	WriteLn;
+	WriteLn(LeftStr('ProgRun():' + StringOfChar('-', 80), 80));
+	
+	// Delete any previous export file.
+	DeleteFile(FNAME_ACCOUNT);
+	DeleteFile(FNAME_LASTLOGON);
+	
+	Step1Export();
+	
+	WriteLn('Program completed!');
 end; // of procedure ProgRun()
 
 
 
 procedure ProgDone();
-var
-	nTotal: LongInt;
-	nPercentDisable: Double;
-	nPercentDelete: Double;
 begin
-    // Close the batch file.
-	//txtBatch.CloseFile();
-	
-	// Close the log file.
-	//tsvLog.CloseFile();
-
-	// Close the export file.
-	//tsvExport.CloseFile();
-{ 
-	nTotal := tsvExport.GetCurrentLine();
-	nPercentDisable := (giTotalDisable / nTotal) * 100;
-	nPercentDelete := (giTotalDelete / nTotal) * 100;
-	
-	WriteLn;
-	WriteLn('STATISTICS:');
-	WriteLn(' Batch          : ', gsBatchNumber);
-	WriteLn(' Total accounts : ', nTotal:5);
-	WriteLn(' Disabled       : ', giTotalDisable:5, ' (', nPercentDisable:3:2, '%)');
-	WriteLn(' Deleted        : ', giTotalDelete:5, ' (', nPercentDelete:3:2, '%)');
-	}
 end; // of procedure ProgDone()
 	
-	
+
 
 begin
 	ProgInit();
 	ProgRun();
-	{WriteLn(GetSupportOrg('CSC_Ronald.Blies'));
-	WriteLn(GetSupportOrg('GTN_Ronald.Blies'));
-	WriteLn(GetSupportOrg('KPN_Ronald.Blies'));
-	WriteLn(GetSupportOrg('NSA_Ronald.Blies'));
-	WriteLn(GetSupportOrg('HP_Ronald.Blies'));
-	WriteLn(GetSupportOrg('EDS_Ronald.Blies'));
-	
-	WriteLn(GetDomainFromDn('CN=KPN_Daniel.Heinsius,OU=KPN,OU=Beheer,DC=rs,DC=root,DC=nedtrain,DC=test'));
-	WriteLn(GetDomainFromDn('CN=GTN_Adri.Kusters,OU=GTN,OU=Beheer,DC=ontwikkel,DC=ns,DC=nl'));
-	WriteLn(IsBeheeraccount('GTN_Adri.Kusters'));
-	WriteLn(IsBeheeraccount('SVC_Testing'));
-	}
 	ProgDone();
 end. // of program BACleanup
