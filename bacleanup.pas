@@ -25,6 +25,9 @@
 					CreateExportLastLogon
 			Step2Process
 				GetPosOfHeaderItem
+				ProcessAccount
+					IsValidAccount
+					
 		ProgDone
 
 	
@@ -41,7 +44,9 @@
 		procedure Step1Export();
 		procedure Step2Process();
 		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
-		function GetReadLastLogon(strDn: string): TDateTime;
+		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime): TDateTime;
+		function IsValidAccount(sSam: string): boolean;
+		
 	
 }
 
@@ -147,16 +152,13 @@ end; // of function GetRootDseFromDn
 
 
 
-function IsBeheeraccount(sSam: string): boolean;
-
+function IsValidAccount(sSam: string): boolean;
 type
 	TPrefix = array[0..10] of string;
-
 var
 	aPrefix: TPrefix;
 	x: integer;
 	r: boolean;
-	
 begin
 	r := false;
 
@@ -178,8 +180,8 @@ begin
 		if Pos(aPrefix[x] + '_', UpperCase(sSam)) = 1 then
 			r := true;
 	end;
-	IsBeheeraccount := r;
-end; // of function IsBeheeraccount
+	IsValidAccount := r;
+end; // of function IsValidAccount
 
 
 
@@ -302,7 +304,7 @@ begin
 	//WriteLn(iLine, '|', sDn, '|', sSam, '|', sDesc, '|', sUac, '|', sLastLogon, '|', sCreated);
 	
 	
-	if IsBeheeraccount(sSam) = false then
+	if IsValidAccount(sSam) = false then
 	begin
 		Writeln(sSam + ' is not an beheeraccount, skipping...');
 		Exit;
@@ -387,191 +389,6 @@ begin
 end; // of function DateDiffSec().
 
 
-function GetLatestLogonDatePerDc(strFNameLastLogon: string; strHostname: string; strDn: string): TDateTime;
-
-var
-	c: string;
-	f: TextFile;
-	strLine: string;
-	p: TProcess;
-	r: TDateTime;
-	strLastLogonDateTime: string;
-begin
-	c := 'adfind.exe -h ' + strHostname + ' -b ' + EncloseDoubleQuote(strDn) + ' lastLogon -csv -nocsvq -nodn -nocsvheader -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" >>' + strFNameLastLogon;
-	
-	WriteLn;
-	WriteLn('GetLatestLogonDatePerDc(): ', c);
-	p := TProcess.Create(nil);
-	p.Executable := 'cmd.exe'; 
-	p.Parameters.Add('/c ' + c);
-	p.Options := [poWaitOnExit, poUsePipes];
-	p.Execute;		// Execute the command.
-		
-	p.Destroy;
-	
-	// Set the default return value to 0
-	r := 0;
-	// Open the text file and read the lines from it.
-	AssignFile(f, strFNameLastLogon);
-	{I+}
-	try
-		Reset(f);
-		repeat
-			ReadLn(f, strLine);
-			if Pos('>lastLogon: ', strLine) > 0 then
-			begin
-				strLastLogonDateTime := RightStr(strLine, 19); // Removed '>lastLogon: '.
-				if strLastLogonDateTime = '0000-00-00 00:00:00' then
-					// The value retrieved from the DC is a blank, So return 0
-					r := 0
-				else
-					r := StrToDateTime(strLastLogonDateTime);
-			end
-		until Eof(f);
-		CloseFile(f);
-	except
-		on E: EInOutError do
-			WriteLn('File ', strFNameLastLogon, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
-	end;
-	
-	WriteLn('GetLatestLogonDatePerDc(): r=', DateTimeToStr(r));
-	
-	GetLatestLogonDatePerDc := r;
-end; // of function GetLatestLogonDatePerDc
-
-
-function GetLatestLogonDate(strAccountDn: string): TDateTime;
-{
-	adfind -b "DC=prod,DC=ns,DC=nl" -sc dclist
-	
-	adfind -h NS00DC012.prod.ns.nl -b CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl lastLogon -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%"
-}
-const
-	FNAME_TMP_DCLIST = 			'dclist.tmp';
-	FNAME_TMP_LASTLOGON = 		'lastlogon.tmp';
-var
-	p: TProcess;
-	p2: TProcess;
-	
-	c: string;
-	c2: string;
-	d: string;
-	f: TextFile;
-	strFqdn: string;
-	strLine: string;
-	r: TDateTime;
-	strLastLogonDateTime: string;
-	dtFromDc: TDateTime; 
-	intSeconds: int64;
-begin
-	r := 0;
-	
-	WriteLn('GetLatestLogonDate(): ', strAccountDn);
-	
-	d := GetRootDseFromDn(strAccountDn);
-	c := 'adfind.exe -b ' + EncloseDoubleQuote(d) + ' -sc dclist >' + FNAME_TMP_DCLIST;
-
-	WriteLn;
-	WriteLn('GetLatestLogonDate(): ', c);
-	
-	// Setup the process to be executed.
-	p := TProcess.Create(nil);
-	p.Executable := 'cmd.exe'; 
-    p.Parameters.Add('/c ' + c);
-	// 1) Wait until the process is finished and 
-	// 2) do not show output to the console.
-	p.Options := [poWaitOnExit, poUsePipes]; 
-	p.Execute;		// Execute the command.
-	
-	p.Destroy;		// Destroy the process.
-
-	// Delete any existing file before.
-	DeleteFile(FNAME_TMP_LASTLOGON);
-	
-	// Open the text file and read the lines from it.
-	AssignFile(f, FNAME_TMP_DCLIST);
-	{I+}
-	try
-		Reset(f);
-		repeat
-			ReadLn(f, strFqdn);
-			WriteLn('Working on: ', strFqdn);
-			
-			// -csv -nocsvq -nodn -nocsvheader
-			c2 := 'adfind.exe -h ' + strFqdn + ' -b ' + EncloseDoubleQuote(strAccountDn) + ' lastLogon -tdcs -tdcsfmt "%YYYY%-%MM%-%DD% %HH%:%mm%:%ss%" >>' + FNAME_TMP_LASTLOGON;
-	
-			p2 := TProcess.Create(nil);
-			p2.Executable := 'cmd.exe'; 
-			p2.Parameters.Add('/c ' + c2);
-			p2.Options := [poWaitOnExit, poUsePipes];
-			p2.Execute;		// Execute the command.
-		
-			p2.Destroy;
-			
-			//dtFromDc := GetLatestLogonDatePerDc(FNAME_TMP_LASTLOGON, strFqdn, strAccountDn);
-		until Eof(f);
-		CloseFile(f);
-		
-		WriteLn('File ', FNAME_TMP_LASTLOGON, ' created.');
-	except
-		on E: EInOutError do
-			WriteLn('File ', FNAME_TMP_DCLIST, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
-	end;
-	GetLatestLogonDate := r;
-end; // of function GetLatestLogonDate
-
-
-
-procedure PerformAction(strDn: string; strLastLogon: string; strCreated: string; intUserAccountControl: integer);
-var
-	dtAction: TDateTime;
-	dtActionOnTheSecond: TDateTime;
-	intActionSecondsAgo: integer;
-	intActionDaysAgo: integer;
-begin
-	WriteLn;
-	WriteLn('PerformAction():');
-	WriteLn('  DN              : ', strDn);
-	WriteLn('  Last logon      : ', strLastLogon);
-	WriteLn('  Created         : ', strCreated);
-	WriteLn('  UAC             : ', intUserAccountControl);
-	
-	gintSecondsDisable := DAYS_DISABLE * 24 * 60 * 60;
-	gintSecondsDelete := DAYS_DELETE * 24 * 60 * 60;
-	
-	//WriteLn('gintSecondsDisable=', gintSecondsDisable);
-	//WriteLn('gintSecondsDelete=', gintSecondsDelete);
-	
-	// If the last logon conains no data, is empty.
-	// Then use the creation date of the last action of the account.
-	if Length(strLastLogon) = 0 then
-		dtAction := StrToDateTime(strCreated) // Convert the string with a date time to a number to use in calculations.
-	else
-		dtAction := StrToDateTime(strLastLogon);
-	
-	WriteLn('DTACTION=', DateTimeToStr(dtAction));
-	
-	intActionSecondsAgo := DateDiffSec(Now(), dtAction); // Calculate the number of seconds ago to the dtAction date time.
-	intActionDaysAgo := DaysBetween(Now(), dtAction);
-	
-	WriteLn('intActionSecondsAgo=', intActionSecondsAgo);
-	
-	if intActionSecondsAgo > gintSecondsDelete then
-	begin
-		WriteLn('DELETE, the account is not used for ', intActionDaysAgo, ' days, that''s over the threshold of ', DAYS_DELETE, ' days.');
-		
-		dtActionOnTheSecond := GetLatestLogonDate(strDn);
-		WriteLn('dtActionOnTheSecond=', DateTimeToStr(dtActionOnTheSecond));
-	end
-	else
-	begin
-		if intActionSecondsAgo > gintSecondsDisable then
-		begin
-			WriteLn('DISABLE, the account is not used for ', intActionDaysAgo, ' days, that''s over the threshold of ', DAYS_DISABLE, ' days.');
-		end;
-	end; // of if intActionSecondsAgo > gintSecondsDelete then
-end; // of procedure PerformAction().
-
 
 
 function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime): TDateTime;
@@ -591,12 +408,9 @@ begin
 	intLineCount := 0;
 	dtLatest := dtCreated; // Latest date time is now the created date time.
 	
-	WriteLn;
-	WriteLn;
-	WriteLn;
-	WriteLn('GetReadLastLogon():');
-	WriteLn('  strSearchDn : [', strSearchDn, ']');
-	WriteLn('    dtCreated : ', DateTimeToStr(dtCreated));
+	//WriteLn('GetReadLastLogon():');
+	//WriteLn('  strSearchDn : [', strSearchDn, ']');
+	//WriteLn('    dtCreated : ', DateTimeToStr(dtCreated));
 	
 	AssignFile(f, FNAME_LASTLOGON);
 	{I+}
@@ -622,7 +436,7 @@ begin
 				end;
 				}
 				
-				if (Length(arrLine[1]) <> 0) then
+				if (Length(arrLine[1]) <> 0) and (arrLine[1] <> '0000-00-00 00:00:00') then
 				begin
 					// There is a date found in the line
 					//WriteLn('FOUND A DATE!');
@@ -650,14 +464,39 @@ end; // of function GetReadLastLogon
 
 
 
-procedure ProcessAccount(strDn: string; dtCreate: TDateTime; intUac: integer);
+procedure ProcessAccount(strDn: string; strSam: string; dtLatest: TDateTime; intUac: integer);
+var
+	intSecondsAgo: integer;
 begin
 	WriteLn;
 	WriteLn(LeftStr('ProcessAccount():' + StringOfChar('-', 80), 80));
+	
+	if IsValidAccount(strSam) = false then
+	begin
+		Writeln(strSam + ' is not an valid account, skipping...');
+		Exit;
+	end;
+	
 	WriteLn('    strDn : ', strDn);
-	WriteLn(' dtCreate : ', DateTimeToStr(dtCreate));
+	WriteLn('   strSam : ', strSam);
+	WriteLn(' dtLatest : ', DateTimeToStr(dtLatest));
 	WriteLn('   intUac : ', intUac);
-end;
+	
+	intSecondsAgo := DateDiffSec(Now(), dtLatest);
+	WriteLn(' intSecondsAgo : ', intSecondsAgo, ' = ', (intSecondsAgo / 86400), ' days');
+	
+	if intSecondsAgo > gintSecondsDelete then
+	begin
+		WriteLn('This account is not used for more then ', DAYS_DELETE, ' days, action: DELETE');
+	end
+	else 
+	begin
+		if	intSecondsAgo > gintSecondsDisable then
+			WriteLn('This account is not used for more then ', DAYS_DISABLE, ' days, action: DISABLE')
+		else
+			WriteLn('No action needed!');
+	end;
+end; // of procedure ProcessAccount
 
 
 
@@ -693,10 +532,13 @@ var
 	intPosDn: integer;
 	intPosCreated: integer;
 	intPosUac: integer;
+	intPosSam: integer;
 	strLine: AnsiString;
+	strSam: string;
 	strDn: string;
 	dtCreated: TDateTime;
 	intUac: integer;
+	dtLatest: TDateTime;
 begin
 	WriteLn;
 	WriteLn(LeftStr('Step2Process():' + StringOfChar('-', 80), 80));
@@ -722,6 +564,7 @@ begin
 				intPosDn := GetPosOfHeaderItem('dn');
 				intPosCreated := GetPosOfHeaderItem('whenCreated');
 				intPosUac := GetPosOfHeaderItem('userAccountControl');
+				intPosSam := GetPosOfHeaderItem('sAMAccountName');
 			end
 			
 			else
@@ -733,12 +576,15 @@ begin
 				arrLine := SplitString(strLine, SEPARATOR);
 				
 				strDn := arrLine[intPosDn];
+				strSam := arrLine[intPosSam];
 				dtCreated := StrToDateTime(arrLine[intPosCreated]);
 				intUac := StrToInt(arrLine[intPosUac]);
 				
 				//WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
 				
-				ProcessAccount(strDn, dtCreated, intUac);
+				// Get the real latest action on the account.
+				dtLatest := GetReadLastLogon(strDn, dtCreated);
+				ProcessAccount(strDn, strSam, dtLatest, intUac);
 			end;
 		until Eof(f);
 		CloseFile(f);
@@ -936,13 +782,13 @@ begin
 	
 	
 	
-	strDn := 'CN=BEH_Sakesun.Srasom,OU=BEH,OU=Beheer,DC=test,DC=ns,DC=nl';
+	strDn := 'CN=BEH_WMIScanProject,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2007-03-08 11:13:50');
-	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 	
 	strDn := 'CN=BEH_Perry.vdHondel,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2011-10-10 13:39:41');
-	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 
 end; // of procedure ProgTest()
 
@@ -957,6 +803,10 @@ begin
 	WriteLn('Now: ' + DateTimeToStr(gdtNow));
 	
 	gsBatchNumber := GetDateFs(false); // + GetTimeFs();
+	
+	gintSecondsDisable := DAYS_DISABLE * 86400; // seconds is 24 hours & 60 min * 60 sec = 86400.
+	gintSecondsDelete := DAYS_DELETE * 86400;
+	
 end; // of procedure ProgInit()
 
 
