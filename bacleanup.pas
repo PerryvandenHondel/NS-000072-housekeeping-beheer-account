@@ -382,7 +382,7 @@ var
 	r: integer;
 begin
 	r := Trunc(86400.0 * (Date1 - Date2)); // Number of seconds between 2 dates
-	WriteLn('DateDiffSec(): Date1=', DateTimeToStr(Date1), ' - Date2=', DateTimeToStr(Date2), ' = ', r);
+	//WriteLn('DateDiffSec(): Date1=', DateTimeToStr(Date1), ' - Date2=', DateTimeToStr(Date2), ' = ', r);
 	DateDiffSec := r;
 end; // of function DateDiffSec().
 
@@ -574,7 +574,7 @@ end; // of procedure PerformAction().
 
 
 
-function GetReadLastLogon(strSearchDn: string): TDateTime;
+function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime): TDateTime;
 {
 	Read the FNAME_LASTLOGON file and returns the latest lastLogon from a strSearchDn
 }
@@ -582,8 +582,21 @@ var
 	f: TextFile;
 	intLineCount: integer;
 	strLine: AnsiString;
+	arrLine: TStringArray;
+	dtLatest: TDateTime;
+	x: integer;
+	dtFound: TDateTime;
+	intSecondsBetween: integer;
 begin
 	intLineCount := 0;
+	dtLatest := dtCreated; // Latest date time is now the created date time.
+	
+	WriteLn;
+	WriteLn;
+	WriteLn;
+	WriteLn('GetReadLastLogon():');
+	WriteLn('  strSearchDn : [', strSearchDn, ']');
+	WriteLn('    dtCreated : ', DateTimeToStr(dtCreated));
 	
 	AssignFile(f, FNAME_LASTLOGON);
 	{I+}
@@ -592,14 +605,37 @@ begin
 		repeat
 			Inc(intLineCount);
 			ReadLn(f, strLine);
-			if (LeftStr(strLine, 3) = 'CN=') then
+			// Skip all lines that are not an Distinguished Name (DN) (starting with 'CN=').
+			//WriteLn(intLineCount, ': ', strLine);
+			if Pos(strSearchDn, strLine) > 0 then
 			begin
-				// Skip all lines that are not an Distinguished Name (DN) (starting with 'CN=').
-				//WriteLn(intLineCount, ': ', strLine);
-				if Pos(strSearchDn, strLine) > 0 then
+				// Only process the lines that contain the DN of the user.
+				//WriteLn('strLine=', strLine);
+					
+				SetLength(arrLine, 0);
+				arrLine := SplitString(strLine, #9);
+				
+				{
+				for x := 0 to High(arrLine) do
 				begin
-					WriteLn('*** FOUND: ', strSearchDn, ' ***');
-					WriteLn('strLine=', strLine);
+					WriteLn(x, ':[', arrLine[x], ']    LENGTH=', Length(arrLine[x]));
+				end;
+				}
+				
+				if (Length(arrLine[1]) <> 0) then
+				begin
+					// There is a date found in the line
+					//WriteLn('FOUND A DATE!');
+					dtFound := StrToDateTime(arrline[1]);
+					
+					intSecondsBetween := DateDiffSec(dtFound, dtLatest);
+					//WriteLn(' Seconds between dtLatest and dtLatest: ', intSecondsBetween);
+					if intSecondsBetween > 0 then
+					begin
+						// A new latest date time
+						dtLatest := dtFound;
+						//WriteLn('dtLatest has become: ', DateTimeToStr(dtLatest), ', because its newer then the current dtLatest.');
+					end;
 				end;
 			end;
 		until Eof(f);
@@ -608,7 +644,21 @@ begin
 		on E: EInOutError do
 			WriteLn('File ', FNAME_LASTLOGON, ' handeling error occurred, Details: ', E.ClassName, '/', E.Message);
 	end;
+	
+	GetReadLastLogon := dtLatest;
 end; // of function GetReadLastLogon
+
+
+
+procedure ProcessAccount(strDn: string; dtCreate: TDateTime; intUac: integer);
+begin
+	WriteLn;
+	WriteLn(LeftStr('ProcessAccount():' + StringOfChar('-', 80), 80));
+	WriteLn('    strDn : ', strDn);
+	WriteLn(' dtCreate : ', DateTimeToStr(dtCreate));
+	WriteLn('   intUac : ', intUac);
+end;
+
 
 
 function GetPosOfHeaderItem(searchHeaderItem: string): integer;
@@ -664,7 +714,7 @@ begin
 			
 			if intLineCount = 1 then
 			begin
-			
+				// Determine on the first line, the header where all the data is located.
 				WriteLn('HEADER!!', intLineCount, ': ', strLine);
 				SetLength(garrHeader, 0); // Initialize the array space for the header.
 				garrHeader := SplitString(strLine, SEPARATOR); // Split the line into an garrHeader array.
@@ -686,7 +736,9 @@ begin
 				dtCreated := StrToDateTime(arrLine[intPosCreated]);
 				intUac := StrToInt(arrLine[intPosUac]);
 				
-				WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
+				//WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
+				
+				ProcessAccount(strDn, dtCreated, intUac);
 			end;
 		until Eof(f);
 		CloseFile(f);
@@ -866,6 +918,7 @@ end; // of procedure Step1Export().
 procedure ProgTest();
 var
 	strDn: string;
+	dtCreated: TDateTime;
 begin
 	//WriteLn(GetLatestLogonDate('CN=HP_Ian.Webermann,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl'));
 	//strDn := 'CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl';
@@ -874,11 +927,23 @@ begin
 	
 	
 	strDn := 'CN=KPN_P.Krishnachar,OU=KPN,OU=Beheer,DC=test,DC=ns,DC=nl';
-	WriteLn(DateTimeToStr(GetReadLastLogon(strDn)));
+	dtCreated := StrToDateTime('2014-06-18 13:03:30');
+	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 	
 	strDn := 'CN=BEH_Gilroy.Weiland,OU=BEH,OU=Beheer,DC=test,DC=ns,DC=nl';
-	WriteLn(DateTimeToStr(GetReadLastLogon(strDn)));
+	dtCreated := StrToDateTime('2008-3-17 09:52:03');
+	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 	
+	
+	
+	strDn := 'CN=BEH_Sakesun.Srasom,OU=BEH,OU=Beheer,DC=test,DC=ns,DC=nl';
+	dtCreated := StrToDateTime('2007-03-08 11:13:50');
+	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+	
+	strDn := 'CN=BEH_Perry.vdHondel,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
+	dtCreated := StrToDateTime('2011-10-10 13:39:41');
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+
 end; // of procedure ProgTest()
 
 
@@ -920,7 +985,7 @@ end; // of procedure ProgDone()
 
 begin
 	ProgInit();
-	//ProgRun();
-	ProgTest();
+	ProgRun();
+	//ProgTest();
 	ProgDone();
 end. // of program BACleanup
