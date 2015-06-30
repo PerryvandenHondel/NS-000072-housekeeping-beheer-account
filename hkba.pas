@@ -27,6 +27,9 @@
 				GetPosOfHeaderItem
 				ProcessAccount
 					IsValidAccount
+					WriteToLog
+						GetDnsDomainFromDn
+						GetSupportOrg
 					
 					
 		ProgDone
@@ -36,19 +39,25 @@
 	PRCOEDURES AND FUNCTIONS:
 	=========================
 	
+		function GetDnsDomainFromDn(sDn: string): string;
+		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
+		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime; dtLastLogonTimestamp: TDateTime): TDateTime;
+		function GetRootDseFromDn(sDn: string): string;
+		function GetSupportOrg(sSam: string): string;
+		function IsValidAccount(sSam: string): boolean;
+		function StrToDateTimeCheck(strDateTime: string): TDateTime;
 		procedure CreateExportAccount(strFnameAccount: string; strDomainNetbios: string; strBaseOu: string);
 		procedure CreateExportDcList(strFnameDcList: string; strRootDn: string);
 		procedure CreateExportLastLogon(strFnameLastLogon: string; strRootDse: string; strBaseOu: string);
+		procedure DoDelete(strDn: string; strSam: string);
+		procedure DoDisable(strDn: string; strDescription: string, strBatchNumber: string);
+		procedure ProcessAccount(strDn: string; strSam: string; dtLatest: TDateTime; intUac: integer; strDescription: string; strUpn: string);
 		procedure ProgDone();
 		procedure ProgInit();
 		procedure ProgRun();
 		procedure Step1Export();
 		procedure Step2Process();
-		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
-		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime; dtLastLogonTimestamp: TDateTime): TDateTime;
-		function IsValidAccount(sSam: string): boolean;
-		
-	
+		procedure WriteToLog(strDn: string; strAction: string; dtLatest: TDateTime; intDaysAgo: integer);
 }
 
 
@@ -77,17 +86,18 @@ const
 	DAYS_DELETE =						180;	// Delete accounts older then...
 	ADS_UF_ACCOUNTDISABLE =				2;		// UserAccountControl bit for account disable
 	ADS_UF_DONT_EXPIRE_PASSWD = 		65536;	// UserAccountControl bit for Password Never Expires
-	//SECS_PER_DAY = 					86400;	// Number of seconds per day (24 * 60 * 60 = 86400)
-
-	FNAME_EXPORT = 					 	'export.tmp';
-	FNAME_ACTION = 						'action.cmd';
-	FNAME_DCLIST = 						'export-dc-list.tmp';
-	FNAME_ACCOUNT = 					'export-account.tmp';
-	FNAME_LASTLOGON = 					'export-last-logon.tmp'; 
-	FNAME_CONFIG = 						'bacleanup.conf';
+	//FNAME_EXPORT = 					'export.tmp';
+	//FNAME_ACTION = 					'action.cmd';
+	FNAME_DCLIST = 						'$export-dc-list.tmp';
+	FNAME_ACCOUNT = 					'$export-account.tmp';
+	FNAME_LASTLOGON = 					'$export-last-logon.tmp'; 
+	FNAME_CONFIG = 						'hkba.conf';
 	FNAME_LOG = 						'log.tsv';
 	SEPARATOR = 						#9;		// Separator of export file is a TAB, Chr(9) or #9
+	SEPARATOR_LOG = 					#59;	// ;
+	//SECONDS_PER_DAY = 					86400;	// Number of seconds per day (24 * 60 * 60 = 86400)
 	
+
 	
 var
 	//giSecDisable: LongInt;
@@ -97,9 +107,12 @@ var
 	
 	gdtNow: TDateTime;
 	//tsvExport: CTextSeparated;	
-	//tsvLog: CTextSeparated;
-	//txtBatch: CTextFile;
-	gsBatchNumber: string; 			// Contains the batch number in format YYYYMMDDHHMMSS
+	//tfLog: CTextSeparated;
+	gtfLog: TextFile;
+	gtfBatch: TextFile;
+	gstrFNameBatch: string;
+	gstrFNameLog: string;
+	gstrBatchNumber: string; 			// Contains the batch number in format YYYYMMDDHHMMSS
 	garrHeader: TStringArray;
 	gintSecondsDisable: integer;
 	gintSecondsDelete: integer;
@@ -114,7 +127,6 @@ function GetDnsDomainFromDn(sDn: string): string;
 	
 	CN=Jurgen.Caspers,OU=Normal,OU=Accounts,OU=RBAC,DC=REC,DC=NSINT > rec.nsint
 }
-
 var
 	p: integer;
 	r: string;
@@ -130,6 +142,7 @@ begin
 	
 	GetDnsDomainFromDn := r;
 end; // of function GetDnsDomainFromDn
+
 
 
 function GetRootDseFromDn(sDn: string): string;
@@ -190,7 +203,6 @@ function GetSupportOrg(sSam: string): string;
 {
 	Returns the support organisation of the beheer account
 }
-
 var
 	sPrefix: string;
 	r: string;
@@ -232,57 +244,71 @@ begin;
 end; // of function IsDisabled
 	
 
-{	
-procedure DoCommandDisable(sDn: string; sDesc: string);
-var
-	sCmd: string;
-begin
-	// First update the description field Description
-	sCmd := 'dsmod.exe user "' + sDn + '" -desc "BA HOUSEKEEPING ' + gsBatchNumber + ', ' + sDesc + '"';
-	//txtBatch.WriteToFile(sCmd);
-
-	// Secondly disable the account using DSMOD.EXE to disable the account
-	sCmd := 'dsmod.exe user "' + sDn + '" -disabled yes';
-	//txtBatch.WriteToFile(sCmd);
 	
-	// Add a blank line
-	//txtBatch.WriteToFile('');
-end; // of procedure WriteDisable
+procedure DoDisable(strDn: string; strDescription: string);
+{
+	Disable the account 
 }
-
-procedure DoCommandDelete(sDn: string; sSam: string);
 var
-	sCmd: string;
+	c: string;
 begin
-	sCmd := 'adfind.exe -b "' + sDn + '" ';
-	sCmd := sCmd + '-tdcs -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
-	sCmd := sCmd + '-tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
-	sCmd := sCmd + '>>userinfo\' + sSam + '.txt';
-	//txtBatch.WriteToFile(sCmd);
+	// First update the description field Description.
+	c := 'dsmod.exe user "' + strDn + '" -desc "[HKBA-' + gstrBatchNumber + '] ' + strDescription + '"';
+	WriteLn(gtfBatch, c);
+
+	// Secondly disable the account using DSMOD.EXE to disable the account.
+	c := 'dsmod.exe user "' + strDn + '" -disabled yes';
+	WriteLn(gtfBatch, c);
 	
-	sCmd := 'dsrm.exe "' + sDn + '" -noprompt';
-	//txtBatch.WriteToFile(sCmd);
+	// Add a blank line for readability.
+	WriteLn(gtfBatch);
+end; // of procedure DoDisable
+
+
+
+procedure DoDelete(strDn: string; strUpn: string);
+{
+	Export the current information of the account to a file.
+	Delete an account.
+}
+var
+	c: string;
+begin
+	WriteLn('DoDelete():');
+	WriteLn('  strDn : ', strDn);
 	
-	// Add a blank line
-	//txtBatch.WriteToFile('');
+	c := 'adfind.exe -b "' + strDn + '" ';
+	c := c + '-tdcs -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
+	c := c + '-tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
+	c := c + '>>deleted-accounts\' + strUpn + '.txt';
+	WriteLn(gtfBatch, c);
+	
+	c := 'dsrm.exe "' + strDn + '" -noprompt';
+	WriteLn(gtfBatch, c);
+
+	// Add a blank line to for readability.
+	WriteLn(gtfBatch);
 end; // of procedure WriteDelete
 
 
-{
-procedure WriteToLog(sDn: string; sSam: string; dtCalc: TDateTime; sWhichUsed: string; iAgoDays: integer; sAction: string; sMessage: string);
 
-var
-	sDomain: string;
-	sSupportOrg: string;
-begin
-	// Get the DNS domain name from a DN
-	sDomain := GetDnsDomainFromDn(sDn);
-	// Get the Support Organization for an SAM account.
-	sSupportOrg := GetSupportOrg(sSam);
-	
-	//tsvLog.WriteToFile(sDomain + #9 + sSupportOrg + #9 + sSam + #9 + DateTimeToStr(dtCalc) + #9 + sWhichUsed + #9 + IntToStr(iAgoDays) + #9 + sAction + #9 + sMessage);
-end; // of procedure WriteToLog
+procedure WriteToLog(strDn: string; strSam: string; strAction: string; dtLatest: TDateTime; intDaysAgo: integer; strDescription: string);
+{
+	Write a line to the log file.
 }
+var
+	l: AnsiString;
+begin
+	l := strDn;
+	l := l + SEPARATOR_LOG + strAction;
+	l := l + SEPARATOR_LOG + DateTimeToStr(dtLatest);
+	l := l + SEPARATOR_LOG + IntToStr(intDaysAgo);
+	l := l + SEPARATOR_LOG + GetDnsDomainFromDn(strDn);
+	l := l + SEPARATOR_LOG + GetSupportOrg(strSam);
+	l := l + SEPARATOR_LOG + strDescription;
+	
+	WriteLn(gtfLog, l);
+end;  // of procedure WriteToLog
 
 
 
@@ -426,16 +452,21 @@ end; // of function GetReadLastLogon
 
 
 
-procedure ProcessAccount(strDn: string; strSam: string; dtLatest: TDateTime; intUac: integer);
+procedure ProcessAccount(strDn: string; strSam: string; dtLatest: TDateTime; intUac: integer; strDescription: string; strUpn: string);
 var
 	intSecondsAgo: integer;
+	intDaysAgo: integer;
 begin
 	WriteLn;
 	WriteLn(LeftStr('ProcessAccount():' + StringOfChar('-', 80), 80));
-	WriteLn('    strDn : ', strDn);
-	WriteLn('   strSam : ', strSam);
-	WriteLn(' dtLatest : ', DateTimeToStr(dtLatest));
-	WriteLn('   intUac : ', intUac);
+	WriteLn('           strDn : ', strDn);
+	WriteLn('          strSam : ', strSam);
+	WriteLn('        dtLatest : ', DateTimeToStr(dtLatest));
+	WriteLn('          intUac : ', intUac);
+	WriteLn('  strDescription : ', strDescription);
+	WriteLn('          strUpn : ', strUpn);
+	
+	
 	
 	
 	if IsValidAccount(strSam) = false then
@@ -445,13 +476,16 @@ begin
 	end;
 	
 	intSecondsAgo := DateDiffSec(Now(), dtLatest);
-	WriteLn('       intSecondsAgo : ', intSecondsAgo:9, ' = ', (intSecondsAgo / 86400):4:0, ' days');
-	WriteLn('   gintSecondsDelete : ', gintSecondsDelete:9, ' = ', (gintSecondsDelete / 86400):4:0, ' days');
-	WriteLn('  gintSecondsDisable : ', gintSecondsDisable:9, ' = ', (gintSecondsDisable / 86400):4:0, ' days');
+	intDaysAgo := Trunc(intSecondsAgo / 86400);
+	WriteLn('       intSecondsAgo : ', intSecondsAgo:9, ' seconds = ', intDaysAgo, ' days');
+	WriteLn('   gintSecondsDelete : ', gintSecondsDelete:9, ' seconds = ', Trunc(gintSecondsDelete / 86400), ' days');
+	WriteLn('  gintSecondsDisable : ', gintSecondsDisable:9, ' seconds = ', Trunc(gintSecondsDisable / 86400), ' days');
 	
 	if intSecondsAgo > gintSecondsDelete then
 	begin
 		WriteLn('This account is not used for more then ', DAYS_DELETE, ' days, action: DELETE');
+		WriteToLog(strDn, strSam, 'DELETE', dtLatest, intDaysAgo, 'Account is not used for ' + IntToStr(intDaysAgo) + ' days, account is deleted.');
+		DoDelete(strDn, strUpn);
 	end
 	else 
 	begin
@@ -459,12 +493,22 @@ begin
 		begin
 			WriteLn('This account is not used for more then ', DAYS_DISABLE, ' days, action: DISABLE');
 			if IsDisabled(intUac) = false then
-				WriteLn('Account is still active, disable it now!')
+			begin
+				WriteLn('Account is still active, disable it now!');
+				WriteToLog(strDn, strSam, 'DISABLE', dtLatest, intDaysAgo, 'Account is not used for ' + IntToStr(intDaysAgo) + ' days and is not yet disabled, account is disabled.');
+				DoDisable(strDn, strDescription);
+			end
 			else
+			begin
 				WriteLn('Account is already disabled.');
+				WriteToLog(strDn, strSam, 'DISABLED', dtLatest, intDaysAgo, 'Account is not used for ' + IntToStr(intDaysAgo) + ' days and is already disabled, no action needed.');
+			end;
 		end
 		else
+		begin
 			WriteLn('No action needed!');
+			WriteToLog(strDn, strSam, 'NO_ACTION', dtLatest, intDaysAgo, 'Account is used within ' + IntToStr(intDaysAgo) + ' days, no action on account needed.');
+		end;
 	end;
 end; // of procedure ProcessAccount
 
@@ -496,23 +540,27 @@ end; // of function GetPosOfHeaderItem()
 
 procedure Step2Process();
 var
+	//dtCreated: TDateTime;
+	//dtLastLogonTimestamp: TDateTime;
 	arrLine: TStringArray;
+	dtLatest: TDateTime;
 	f: TextFile;
 	intLineCount: integer;
-	intPosDn: integer;
 	intPosCreated: integer;
-	intPosUac: integer;
-	intPosSam: integer;
+	intPosDescription: integer;
+	intPosDn: integer;
 	intPosLastLogonTimestamp: integer;
+	intPosSam: integer;
+	intPosUac: integer;
+	intPosUpn: integer;
+	intUac: integer;
+	strCreated: string;
+	strDescription: string;
+	strDn: string;
+	strLastLogonTimestamp: string;
 	strLine: AnsiString;
 	strSam: string;
-	strDn: string;
-	//dtCreated: TDateTime;
-	strCreated: string;
-	strLastLogonTimestamp: string;
-	//dtLastLogonTimestamp: TDateTime;
-	intUac: integer;
-	dtLatest: TDateTime;
+	strUpn: string;
 begin
 	WriteLn;
 	WriteLn(LeftStr('Step2Process():' + StringOfChar('-', 80), 80));
@@ -540,10 +588,11 @@ begin
 				intPosUac := GetPosOfHeaderItem('userAccountControl');
 				intPosSam := GetPosOfHeaderItem('sAMAccountName');
 				intPosLastLogonTimestamp := GetPosOfHeaderItem('lastLogontimeStamp');
-			end
+				intPosDescription := GetPosOfHeaderItem('description');
+				intPosUpn := GetPosOfHeaderItem('userPrincipalName');
+			end;
 			
-			else
-			//if (intLineCount > 1) and (LeftStr(strLine, 3) = 'CN=') then
+			if (intLineCount > 1) and (LeftStr(strLine, 3) = 'CN=') then
 			begin
 				// Only process lines that start with 'CN='.
 				//WriteLn(intLineCount, ': ', strLine);
@@ -552,10 +601,9 @@ begin
 				
 				strDn := arrLine[intPosDn];
 				strSam := arrLine[intPosSam];
-				//dtCreated := StrToDateTime(arrLine[intPosCreated]);
-				//dtLastLogonTimestamp := StrToDateTime(arrLine[intPosLastLogonTimestamp]);
+				strDescription := arrLine[intPosDescription];
 				intUac := StrToInt(arrLine[intPosUac]);
-				
+				strUpn := arrLine[intPosUpn];
 				strCreated := arrLine[intPosCreated];
 				strLastLogonTimestamp := arrLine[intPosLastLogonTimestamp];
 				
@@ -564,7 +612,7 @@ begin
 				// Get the real latest action on the account.
 				dtLatest := GetReadLastLogon(strDn, strCreated, strLastLogonTimestamp);
 				// Process the line with data.
-				ProcessAccount(strDn, strSam, dtLatest, intUac);
+				ProcessAccount(strDn, strSam, dtLatest, intUac, strDescription, strUpn);
 			end;
 		until Eof(f);
 		CloseFile(f);
@@ -740,7 +788,7 @@ begin
 end; // of procedure Step1Export().
 
 
-
+{
 procedure ProgTest();
 var
 	strDn: string;
@@ -760,8 +808,6 @@ begin
 	dtCreated := StrToDateTime('2008-3-17 09:52:03');
 	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 	
-	
-	
 	strDn := 'CN=BEH_WMIScanProject,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2007-03-08 11:13:50');
 	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
@@ -771,7 +817,7 @@ begin
 	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 
 end; // of procedure ProgTest()
-
+}
 
 
 procedure ProgInit();
@@ -781,14 +827,42 @@ var
 }
 begin
 	gdtNow := Now();
-	
 	WriteLn('Now: ' + DateTimeToStr(gdtNow));
 	
-	gsBatchNumber := GetDateFs(false); // + GetTimeFs();
+	// Get the batch number for this run (Format: YYYYMMDD).
+	gstrBatchNumber := GetDateFs(false); // + GetTimeFs();
 	
 	gintSecondsDisable := DAYS_DISABLE * 86400; // seconds is 24 hours & 60 min * 60 sec = 86400.
 	gintSecondsDelete := DAYS_DELETE * 86400;
 	
+	gstrFNameBatch := 'hkba-' + gstrBatchNumber + '.cmd';
+	gstrFNameLog := 'hkba-' + gstrBatchNumber + '.csv';
+	
+	// Delete the existing files for this batch.
+	DeleteFile(gstrFNameBatch);
+	DeleteFile(gstrFNameLog);
+
+	DeleteFile(FNAME_ACCOUNT);
+	DeleteFile(FNAME_LASTLOGON);
+	
+	// Assign and open the batch file for writing.
+	AssignFile(gtfBatch, gstrFNameBatch);
+	{I+}
+	ReWrite(gtfBatch);
+	WriteLn(gtfBatch, '@echo off');
+	WriteLn(gtfBatch, '::');
+	WriteLn(gtfBatch, ':: HOUSEKEEPING BEHEER ACCOUNT (HKBA) OF BATCH ' + gstrBatchNumber);
+	WriteLn(gtfBatch, '::');
+	WriteLn(gtfBatch);
+	WriteLn(gtfBatch, 'if not exist deleted-accounts md deleted-accounts');
+	WriteLn(gtfBatch);
+	
+	// Assign and open the log file for writing.
+	AssignFile(gtfLog, gstrFNameLog);
+	{I+}
+	ReWrite(gtfLog);
+	// Write the header line of the log file.
+	WriteLn(gtfLog, 'DN' + SEPARATOR_LOG + 'Action' + SEPARATOR_LOG + 'lastActionOn' + SEPARATOR_LOG + 'DaysAgo' + SEPARATOR_LOG + 'Domain' + SEPARATOR_LOG + 'SupportOrg' + SEPARATOR_LOG + 'Description');
 end; // of procedure ProgInit()
 
 
@@ -798,10 +872,6 @@ begin
 	WriteLn;
 	WriteLn(LeftStr('ProgRun():' + StringOfChar('-', 80), 80));
 	
-	// Delete any previous export file.
-	DeleteFile(FNAME_ACCOUNT);
-	DeleteFile(FNAME_LASTLOGON);
-	
 	Step1Export();		// Step 1 Exports all the data to files.
 	Step2Process();		// Step 2 Processes these files.
 end; // of procedure ProgRun()
@@ -810,6 +880,12 @@ end; // of procedure ProgRun()
 
 procedure ProgDone();
 begin
+	// Close the log file.
+	CloseFile(gtfLog);
+	
+	// Close the batch file.
+	CloseFile(gtfBatch);
+
 	WriteLn('Program completed!');
 end; // of procedure ProgDone()
 	
