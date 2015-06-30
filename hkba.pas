@@ -28,6 +28,7 @@
 				ProcessAccount
 					IsValidAccount
 					
+					
 		ProgDone
 
 	
@@ -44,7 +45,7 @@
 		procedure Step1Export();
 		procedure Step2Process();
 		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
-		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime): TDateTime;
+		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime; dtLastLogonTimestamp: TDateTime): TDateTime;
 		function IsValidAccount(sSam: string): boolean;
 		
 	
@@ -91,8 +92,8 @@ const
 var
 	//giSecDisable: LongInt;
 	//giSecDelete: LongInt;
-	giTotalDisable: integer;
-	giTotalDelete: integer;
+	//giTotalDisable: integer;
+	//giTotalDelete: integer;
 	
 	gdtNow: TDateTime;
 	//tsvExport: CTextSeparated;	
@@ -102,8 +103,8 @@ var
 	garrHeader: TStringArray;
 	gintSecondsDisable: integer;
 	gintSecondsDelete: integer;
-	strDn: string;
-	dtLatest: TDateTime;
+	//strDn: string;
+	//dtLatest: TDateTime;
 	
 
 
@@ -231,7 +232,7 @@ begin;
 end; // of function IsDisabled
 	
 
-	
+{	
 procedure DoCommandDisable(sDn: string; sDesc: string);
 var
 	sCmd: string;
@@ -247,7 +248,7 @@ begin
 	// Add a blank line
 	//txtBatch.WriteToFile('');
 end; // of procedure WriteDisable
-
+}
 
 procedure DoCommandDelete(sDn: string; sSam: string);
 var
@@ -267,7 +268,7 @@ begin
 end; // of procedure WriteDelete
 
 
-
+{
 procedure WriteToLog(sDn: string; sSam: string; dtCalc: TDateTime; sWhichUsed: string; iAgoDays: integer; sAction: string; sMessage: string);
 
 var
@@ -281,94 +282,8 @@ begin
 	
 	//tsvLog.WriteToFile(sDomain + #9 + sSupportOrg + #9 + sSam + #9 + DateTimeToStr(dtCalc) + #9 + sWhichUsed + #9 + IntToStr(iAgoDays) + #9 + sAction + #9 + sMessage);
 end; // of procedure WriteToLog
+}
 
-
-
-procedure ProcessLine(iLine: integer; sDn: string; sSam: string; sDesc: string; sUac: string; sLastLogon: string; sCreated: string);
-
-var
-	dtCalc: TDateTime;
-	iAgeDay: LongInt;
-	iUac: integer;
-	sUseWhich: string;
-	sAction: string;
-	sActionMsg: string;
-	
-begin
-	WriteLn(iLine, Chr(9), sDn, ' ----------------------------------');
-	
-	if CompareStr('dn', sDn) = 0 then
-		// When a new header line is detected, exit this procedure.
-		Exit;
-	
-	//WriteLn(iLine, '|', sDn, '|', sSam, '|', sDesc, '|', sUac, '|', sLastLogon, '|', sCreated);
-	
-	
-	if IsValidAccount(sSam) = false then
-	begin
-		Writeln(sSam + ' is not an beheeraccount, skipping...');
-		Exit;
-	end;
-	
-	if Length(sLastLogon) > 0 then
-	begin
-		WriteLn('Using last logon to calculate: ' + sLastLogon);
-		sUseWhich := 'LAST_LOGON';
-		dtCalc := StrToDateTime(sLastLogon);
-	end
-	else
-	begin
-		WriteLn('Using creation to calculate: ' + sCreated);
-		sUseWhich := 'CREATED';
-		dtCalc := StrToDateTime(sCreated);
-	end;	
-	
-
-	iAgeDay := DaysBetween(gdtNow, dtCalc);
-	//iAgeDay := iAgeSec Mod SECS_PER_DAY;
-	
-	//WriteLn('Secs ago: ', iAgeSec);
-	WriteLn('Days no action on account: ', iAgeDay);
-	
-	if iAgeDay > DAYS_DELETE then
-	begin
-		WriteLn('This account is not used for more then ', iAgeDay, ' days, action > DELETE');
-		DoCommandDelete(sDn, sSam);
-		sAction := 'DELETE';
-		sActionMsg := 'This account is not used for more then ' + IntToStr(iAgeDay) + ' days';
-		WriteToLog(sDn, sSam, dtCalc, sUseWhich, iAgeDay, sAction, sActionMsg);
-		Inc(giTotalDelete);
-		Exit;
-	end;
-	
-	if iAgeDay > DAYS_DISABLE then
-	begin
-		WriteLn('This account is not used for more then ', IntToStr(iAgeDay), ' days, action > DISABLE');
-		
-		iUac := StrToInt(sUac);
-		
-		if IsDisabled(iUac) = false then
-		begin
-			WriteLn('Disable account');
-			sAction := 'DISABLE';
-			sActionMsg := 'This account is not used for more then ' + IntToStr(iAgeDay) + ' days';
-			WriteToLog(sDn, sSam, dtCalc, sUseWhich, iAgeDay, sAction, sActionMsg);
-			DoCommandDisable(sDn, sDesc);
-		end
-		else
-		begin
-			sAction := 'NONE';
-			sActionMsg := 'Account is already disabled';
-			WriteToLog(sDn, sSam, dtCalc, sUseWhich, iAgeDay, sAction, sActionMsg);
-			WriteLn('Account is already disabled');
-		end;
-		
-		Inc(giTotalDisable);
-		Exit;
-	end;
-	
-	WriteLn('No action needed');
-end;  // of procedure ProcessLine
 
 
 function DateDiffSec(Date1, Date2: TDateTime): int64;
@@ -390,10 +305,43 @@ end; // of function DateDiffSec().
 
 
 
+function StrToDateTimeCheck(strDateTime: string): TDateTime;
+{
+	Convert a date time formatted string to a TDateTime variable
+	Check before conversion of the strDateTime contains data, returns 1899-12-30 00:00:00 (= 0)
+	Check before conversion of the strDateTime doesn't contain a 0000-00-00 00:00:00, returns 1899-12-30 00:00:00 (= 0)
+	Otherwise convert using DateTimeToStr
+}
+var
+	r: TDateTime;
+begin
+	// Check if the strLastLogonTimestamp contains a valid date
+	if (Length(strDateTime) = 0) or (strDateTime = '0000-00-00 00:00:00') then
+		// Invalid date, set the date time to 1899
+		r := StrToDateTime('1899-12-30 00:00:00')
+	else
+		// Valid date time, convert to DateTime variable
+		r := StrToDateTime(strDateTime);
+		
+	StrToDateTimeCheck := r;
+end; // of function DateTimeToStrCheck
 
-function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime): TDateTime;
+
+
+function GetReadLastLogon(strSearchDn: string; strCreated: string; strLastLogonTimestamp: string): TDateTime;
 {
 	Read the FNAME_LASTLOGON file and returns the latest lastLogon from a strSearchDn
+	
+	strSearchDn					DN of the the account
+	strCreated					Account creation Time Date
+	strLastLogonTimestamp		The latest synced date time of the last login.
+	
+	1) Latest is the dtCreated
+	
+	2) If the dtLastLogonTimestamp is newer then the dtCreated then that will be the latest.
+	
+	3) If you find a newer LastLogon date per domain controller, that will become the lateste
+	
 }
 var
 	f: TextFile;
@@ -401,16 +349,30 @@ var
 	strLine: AnsiString;
 	arrLine: TStringArray;
 	dtLatest: TDateTime;
-	x: integer;
+	//x: integer;
 	dtFound: TDateTime;
+	dtCreated: TDateTime;
 	intSecondsBetween: integer;
+	dtLastLogonTimestamp: TDateTime;
 begin
 	intLineCount := 0;
-	dtLatest := dtCreated; // Latest date time is now the created date time.
-	
+
 	//WriteLn('GetReadLastLogon():');
-	//WriteLn('  strSearchDn : [', strSearchDn, ']');
-	//WriteLn('    dtCreated : ', DateTimeToStr(dtCreated));
+	//WriteLn('            strSearchDn : [', strSearchDn, ']');
+	//WriteLn('             strCreated : ', strCreated);
+	//WriteLn('  strLastLogonTimestamp : ', strLastLogonTimestamp);
+	
+	// Convert the strCreated and strLastLogonTimestamp to a DateTime variable.
+	dtCreated := StrToDateTimeCheck(strCreated);
+	dtLastLogonTimestamp := StrToDateTimeCheck(strLastLogonTimestamp);
+	
+	// Latest date time is now the created date time.
+	dtLatest := dtCreated; 
+	
+	// Check if the dtLastLogonTimestamp is newer that the creation date time.
+	if DateDiffSec(dtLatest, dtLastLogonTimestamp) > 0 then
+		// dtLatest becomes the dtLastLogonTimestamp when it's newer
+		dtLatest := dtLastLogonTimestamp;
 	
 	AssignFile(f, FNAME_LASTLOGON);
 	{I+}
@@ -470,6 +432,11 @@ var
 begin
 	WriteLn;
 	WriteLn(LeftStr('ProcessAccount():' + StringOfChar('-', 80), 80));
+	WriteLn('    strDn : ', strDn);
+	WriteLn('   strSam : ', strSam);
+	WriteLn(' dtLatest : ', DateTimeToStr(dtLatest));
+	WriteLn('   intUac : ', intUac);
+	
 	
 	if IsValidAccount(strSam) = false then
 	begin
@@ -477,13 +444,10 @@ begin
 		Exit;
 	end;
 	
-	WriteLn('    strDn : ', strDn);
-	WriteLn('   strSam : ', strSam);
-	WriteLn(' dtLatest : ', DateTimeToStr(dtLatest));
-	WriteLn('   intUac : ', intUac);
-	
 	intSecondsAgo := DateDiffSec(Now(), dtLatest);
-	WriteLn(' intSecondsAgo : ', intSecondsAgo, ' = ', (intSecondsAgo / 86400), ' days');
+	WriteLn('       intSecondsAgo : ', intSecondsAgo:9, ' = ', (intSecondsAgo / 86400):4:0, ' days');
+	WriteLn('   gintSecondsDelete : ', gintSecondsDelete:9, ' = ', (gintSecondsDelete / 86400):4:0, ' days');
+	WriteLn('  gintSecondsDisable : ', gintSecondsDisable:9, ' = ', (gintSecondsDisable / 86400):4:0, ' days');
 	
 	if intSecondsAgo > gintSecondsDelete then
 	begin
@@ -492,7 +456,13 @@ begin
 	else 
 	begin
 		if	intSecondsAgo > gintSecondsDisable then
-			WriteLn('This account is not used for more then ', DAYS_DISABLE, ' days, action: DISABLE')
+		begin
+			WriteLn('This account is not used for more then ', DAYS_DISABLE, ' days, action: DISABLE');
+			if IsDisabled(intUac) = false then
+				WriteLn('Account is still active, disable it now!')
+			else
+				WriteLn('Account is already disabled.');
+		end
 		else
 			WriteLn('No action needed!');
 	end;
@@ -533,10 +503,14 @@ var
 	intPosCreated: integer;
 	intPosUac: integer;
 	intPosSam: integer;
+	intPosLastLogonTimestamp: integer;
 	strLine: AnsiString;
 	strSam: string;
 	strDn: string;
-	dtCreated: TDateTime;
+	//dtCreated: TDateTime;
+	strCreated: string;
+	strLastLogonTimestamp: string;
+	//dtLastLogonTimestamp: TDateTime;
 	intUac: integer;
 	dtLatest: TDateTime;
 begin
@@ -565,6 +539,7 @@ begin
 				intPosCreated := GetPosOfHeaderItem('whenCreated');
 				intPosUac := GetPosOfHeaderItem('userAccountControl');
 				intPosSam := GetPosOfHeaderItem('sAMAccountName');
+				intPosLastLogonTimestamp := GetPosOfHeaderItem('lastLogontimeStamp');
 			end
 			
 			else
@@ -577,13 +552,18 @@ begin
 				
 				strDn := arrLine[intPosDn];
 				strSam := arrLine[intPosSam];
-				dtCreated := StrToDateTime(arrLine[intPosCreated]);
+				//dtCreated := StrToDateTime(arrLine[intPosCreated]);
+				//dtLastLogonTimestamp := StrToDateTime(arrLine[intPosLastLogonTimestamp]);
 				intUac := StrToInt(arrLine[intPosUac]);
 				
-				//WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
+				strCreated := arrLine[intPosCreated];
+				strLastLogonTimestamp := arrLine[intPosLastLogonTimestamp];
 				
+				// WriteLn('PROCESSING LINE ', intLineCount, ': ', strDn, #9, DateTimeToStr(dtCreated), #9, intUac);
+				//WriteLn(strDn, #9, strCreated, #9, strLastLogonTimestamp);
 				// Get the real latest action on the account.
-				dtLatest := GetReadLastLogon(strDn, dtCreated);
+				dtLatest := GetReadLastLogon(strDn, strCreated, strLastLogonTimestamp);
+				// Process the line with data.
 				ProcessAccount(strDn, strSam, dtLatest, intUac);
 			end;
 		until Eof(f);
@@ -784,7 +764,7 @@ begin
 	
 	strDn := 'CN=BEH_WMIScanProject,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2007-03-08 11:13:50');
-	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
 	
 	strDn := 'CN=BEH_Perry.vdHondel,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2011-10-10 13:39:41');
@@ -795,8 +775,10 @@ end; // of procedure ProgTest()
 
 
 procedure ProgInit();
+{
 var
 	sFolderBatch: string;
+}
 begin
 	gdtNow := Now();
 	
