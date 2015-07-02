@@ -404,25 +404,9 @@ begin
 	WriteLn('             strCreated : ', strCreated);
 	WriteLn('  strLastLogonTimestamp : ', strLastLogonTimestamp);
 	
-	// Convert the strCreated and strLastLogonTimestamp to a DateTime variable.
-	//dtCreated := StrToDateTimeCheck(strCreated);
-	//dtLastLogonTimestamp := StrToDateTimeCheck(strLastLogonTimestamp);
-	
-	// Latest date time is now the created date time.
-	//dtLatest := dtCreated; 
-	// Get the latest date time, Created or LastLogonTimestamp
-	dtLatest := GetNewestDateTime(StrToDateTimeCheck(strCreated), StrToDateTimeCheck(strLastLogonTimestamp));
+	// Get the most recent date time from strCreated or strLastLogonTimestamp
+	dtLatest := GetMostRecent(StrToDateTimeCheck(strCreated), StrToDateTimeCheck(strLastLogonTimestamp));
 
-	{
-	// Check if the dtLastLogonTimestamp is newer that the creation date time.
-	intSecondsDiff := DateDiffSec(dtLastLogonTimestamp, dtLatest);
-	WriteLn(' intSecondsDiff : ', intSecondsDiff);
-	if intSecondsDiff > 0 then
-	begin
-		// dtLatest becomes the dtLastLogonTimestamp when it's newer
-		dtLatest := dtLastLogonTimestamp;
-	end;
-	}
 	AssignFile(f, FNAME_LASTLOGON);
 	{I+}
 	try 
