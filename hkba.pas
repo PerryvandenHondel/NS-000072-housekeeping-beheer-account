@@ -30,8 +30,10 @@
 					WriteToLog
 						GetDnsDomainFromDn
 						GetSupportOrg
-					
-					
+					DoDelete
+						WriteToSql
+					DoDisable
+						WriteToSql
 		ProgDone
 
 	
@@ -41,7 +43,7 @@
 	
 		function GetDnsDomainFromDn(sDn: string): string;
 		function GetPosOfHeaderItem(searchHeaderItem: string): integer;
-		function GetReadLastLogon(strSearchDn: string; dtCreated: TDateTime; dtLastLogonTimestamp: TDateTime): TDateTime;
+		function GetReadLastLogon(strSearchDn: string; strCreated: string; strLastLogonTimestamp: string): TDateTime;
 		function GetRootDseFromDn(sDn: string): string;
 		function GetSupportOrg(sSam: string): string;
 		function IsValidAccount(sSam: string): boolean;
@@ -58,6 +60,7 @@
 		procedure Step1Export();
 		procedure Step2Process();
 		procedure WriteToLog(strDn: string; strAction: string; dtLatest: TDateTime; intDaysAgo: integer);
+		procedure WriteToSql(strUpn: string; strAction: string);
 }
 
 
@@ -110,8 +113,10 @@ var
 	//tfLog: CTextSeparated;
 	gtfLog: TextFile;
 	gtfBatch: TextFile;
+	gtfSql: TextFile;
 	gstrFNameBatch: string;
 	gstrFNameLog: string;
+	gstrFnameSql: string;
 	gstrBatchNumber: string; 			// Contains the batch number in format YYYYMMDDHHMMSS
 	garrHeader: TStringArray;
 	gintSecondsDisable: integer;
@@ -245,12 +250,34 @@ end; // of function IsDisabled
 	
 
 	
-procedure DoDisable(strDn: string; strDescription: string);
+procedure WriteToSql(strUpn: string; strAction: string);
+{
+	Write a line to the SQL export file.
+	
+	Open in SQL and run to import.
+	
+	Example line:
+		insert into account_action set upn='KPN_Daniel.vBrienen@prod.ns.nl',action_performed='Added to group',action_on='RP_UH2_Alert_TAB',reference_id=693507;
+}
+var
+	q: string;
+begin
+	q := 'INSERT INTO account_action ';
+	q := q + 'upn=''' + LowerCase(strUpn) + '''';
+	q := q + ',action_performed=''' + strAction + '''';
+	q := q + ',reference_id=''HKBA-' + gstrBatchNumber + ''';';
+	
+	WriteLn(gtfSql, q);
+end; // of procedure WriteToSql.
+
+
+	
+procedure DoDisable(strDn: string; strUpn: string; strDescription: string);
 {
 	Disable the account 
 }
 var
-	c: string;
+	c: AnsiString;
 begin
 	// First update the description field Description.
 	c := 'dsmod.exe user "' + strDn + '" -desc "[HKBA-' + gstrBatchNumber + '] ' + strDescription + '"';
@@ -262,6 +289,9 @@ begin
 	
 	// Add a blank line for readability.
 	WriteLn(gtfBatch);
+	
+	// Write a line to the SQL file.
+	WriteToSql(strUpn, 'Disabled');
 end; // of procedure DoDisable
 
 
@@ -272,7 +302,7 @@ procedure DoDelete(strDn: string; strUpn: string);
 	Delete an account.
 }
 var
-	c: string;
+	c: AnsiString;
 begin
 	WriteLn('DoDelete():');
 	WriteLn('  strDn : ', strDn);
@@ -280,7 +310,7 @@ begin
 	c := 'adfind.exe -b "' + strDn + '" ';
 	c := c + '-tdcs -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
 	c := c + '-tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" ';
-	c := c + '>>deleted-accounts\' + strUpn + '.txt';
+	c := c + ' >deleted-accounts\' + strUpn + '.txt';
 	WriteLn(gtfBatch, c);
 	
 	c := 'dsrm.exe "' + strDn + '" -noprompt';
@@ -288,6 +318,9 @@ begin
 
 	// Add a blank line to for readability.
 	WriteLn(gtfBatch);
+	
+	// Write a line to the SQL file.
+	WriteToSql(strUpn, 'Deleted');
 end; // of procedure WriteDelete
 
 
@@ -300,6 +333,7 @@ var
 	l: AnsiString;
 begin
 	l := strDn;
+	l := l + SEPARATOR_LOG + strSam;
 	l := l + SEPARATOR_LOG + strAction;
 	l := l + SEPARATOR_LOG + DateTimeToStr(dtLatest);
 	l := l + SEPARATOR_LOG + IntToStr(intDaysAgo);
@@ -309,25 +343,6 @@ begin
 	
 	WriteLn(gtfLog, l);
 end;  // of procedure WriteToLog
-
-
-
-function DateDiffSec(Date1, Date2: TDateTime): int64;
-{
-	Calculate the number of seconds between 2 dates.
-	
-	Result:
-		< 0		Date2 is newer then Date1
-		> 0		Date1 is newer then Date2
-		= 0		Date1 is the same as Date2
-}
-var
-	r: integer;
-begin
-	r := Trunc(86400.0 * (Date1 - Date2)); // Number of seconds between 2 dates
-	//WriteLn('DateDiffSec(): Date1=', DateTimeToStr(Date1), ' - Date2=', DateTimeToStr(Date2), ' = ', r);
-	DateDiffSec := r;
-end; // of function DateDiffSec().
 
 
 
@@ -343,8 +358,8 @@ var
 begin
 	// Check if the strLastLogonTimestamp contains a valid date
 	if (Length(strDateTime) = 0) or (strDateTime = '0000-00-00 00:00:00') then
-		// Invalid date, set the date time to 1899
-		r := StrToDateTime('1899-12-30 00:00:00')
+		// Invalid date, set the date time to 1900.
+		r := StrToDateTime('1980-01-01 00:00:00')
 	else
 		// Valid date time, convert to DateTime variable
 		r := StrToDateTime(strDateTime);
@@ -377,29 +392,37 @@ var
 	dtLatest: TDateTime;
 	//x: integer;
 	dtFound: TDateTime;
-	dtCreated: TDateTime;
+	//dtCreated: TDateTime;
 	intSecondsBetween: integer;
-	dtLastLogonTimestamp: TDateTime;
+	//dtLastLogonTimestamp: TDateTime;
+	//intSecondsDiff: integer;
 begin
 	intLineCount := 0;
 
-	//WriteLn('GetReadLastLogon():');
-	//WriteLn('            strSearchDn : [', strSearchDn, ']');
-	//WriteLn('             strCreated : ', strCreated);
-	//WriteLn('  strLastLogonTimestamp : ', strLastLogonTimestamp);
+	WriteLn('GetReadLastLogon():');
+	WriteLn('            strSearchDn : [', strSearchDn, ']');
+	WriteLn('             strCreated : ', strCreated);
+	WriteLn('  strLastLogonTimestamp : ', strLastLogonTimestamp);
 	
 	// Convert the strCreated and strLastLogonTimestamp to a DateTime variable.
-	dtCreated := StrToDateTimeCheck(strCreated);
-	dtLastLogonTimestamp := StrToDateTimeCheck(strLastLogonTimestamp);
+	//dtCreated := StrToDateTimeCheck(strCreated);
+	//dtLastLogonTimestamp := StrToDateTimeCheck(strLastLogonTimestamp);
 	
 	// Latest date time is now the created date time.
-	dtLatest := dtCreated; 
-	
+	//dtLatest := dtCreated; 
+	// Get the latest date time, Created or LastLogonTimestamp
+	dtLatest := GetNewestDateTime(StrToDateTimeCheck(strCreated), StrToDateTimeCheck(strLastLogonTimestamp));
+
+	{
 	// Check if the dtLastLogonTimestamp is newer that the creation date time.
-	if DateDiffSec(dtLatest, dtLastLogonTimestamp) > 0 then
+	intSecondsDiff := DateDiffSec(dtLastLogonTimestamp, dtLatest);
+	WriteLn(' intSecondsDiff : ', intSecondsDiff);
+	if intSecondsDiff > 0 then
+	begin
 		// dtLatest becomes the dtLastLogonTimestamp when it's newer
 		dtLatest := dtLastLogonTimestamp;
-	
+	end;
+	}
 	AssignFile(f, FNAME_LASTLOGON);
 	{I+}
 	try 
@@ -453,6 +476,16 @@ end; // of function GetReadLastLogon
 
 
 procedure ProcessAccount(strDn: string; strSam: string; dtLatest: TDateTime; intUac: integer; strDescription: string; strUpn: string);
+{
+	Select an action based on the dtLatest value
+	
+	dtLatest < DAYS_DISABLE = No action
+	dtLatest > DAYS_DISABLE and dtLatest < DAYS_DELETE = Disable
+	dtLatest > DAYS_DELETE = Delete
+	
+	First
+	
+}
 var
 	intSecondsAgo: integer;
 	intDaysAgo: integer;
@@ -465,9 +498,6 @@ begin
 	WriteLn('          intUac : ', intUac);
 	WriteLn('  strDescription : ', strDescription);
 	WriteLn('          strUpn : ', strUpn);
-	
-	
-	
 	
 	if IsValidAccount(strSam) = false then
 	begin
@@ -496,7 +526,7 @@ begin
 			begin
 				WriteLn('Account is still active, disable it now!');
 				WriteToLog(strDn, strSam, 'DISABLE', dtLatest, intDaysAgo, 'Account is not used for ' + IntToStr(intDaysAgo) + ' days and is not yet disabled, account is disabled.');
-				DoDisable(strDn, strDescription);
+				DoDisable(strDn, strUpn, strDescription);
 			end
 			else
 			begin
@@ -507,7 +537,7 @@ begin
 		else
 		begin
 			WriteLn('No action needed!');
-			WriteToLog(strDn, strSam, 'NO_ACTION', dtLatest, intDaysAgo, 'Account is used within ' + IntToStr(intDaysAgo) + ' days, no action on account needed.');
+			WriteToLog(strDn, strSam, 'NO_ACTION', dtLatest, intDaysAgo, 'Account is used under ' + IntToStr(DAYS_DISABLE) + ' days and therefore in use, no action on account needed.');
 		end;
 	end;
 end; // of procedure ProcessAccount
@@ -540,8 +570,6 @@ end; // of function GetPosOfHeaderItem()
 
 procedure Step2Process();
 var
-	//dtCreated: TDateTime;
-	//dtLastLogonTimestamp: TDateTime;
 	arrLine: TStringArray;
 	dtLatest: TDateTime;
 	f: TextFile;
@@ -574,7 +602,7 @@ begin
 		repeat
 			Inc(intLineCount);
 			ReadLn(f, strLine);
-			//WriteLn(intLineCount, ': ', strLine);
+			WriteLn('Step2Process(): ', intLineCount, ': ', strLine);
 			
 			if intLineCount = 1 then
 			begin
@@ -647,7 +675,7 @@ begin
 		Reset(f);
 		repeat
 			ReadLn(f, strLine);
-			WriteLn(strLine);
+			WriteLn('CreateExportLastLogon(): [', strLine, ']');
 			
 			// Export from all DC's of domain strBaseOu the lastLogon date time value.
 			
@@ -670,6 +698,7 @@ begin
 			p.Options := [poWaitOnExit, poUsePipes]; 
 			p.Execute;		// Execute the command.
 			
+			WriteLn('Exported data of ' + strLine);
 		until Eof(f);
 		CloseFile(f);
 	except
@@ -754,7 +783,6 @@ begin
 	CreateExportAccount(FNAME_ACCOUNT, strDomainNetbios, strBaseOu);
 	CreateExportDcList(FNAME_DCLIST, strRootDn);
 	CreateExportLastLogon(FNAME_DCLIST, FNAME_LASTLOGON, strBaseOu);
-	
 end; // of procedure ProcessDomain()
 
 
@@ -775,10 +803,12 @@ begin
 		repeat
 			// Process  every line in the .conf file.
 			ReadLn(f, strLine);
-			WriteLn(strLine);
-			
-			arrLine := SplitString(strLine, '|');
-			ProcessDomain(FNAME_ACCOUNT, arrLine[0], arrLine[1] + ',' + arrLine[0], arrLine[2]);
+			if Length(strLine) > 0 then
+			begin
+				// Only process valid lines with content.
+				arrLine := SplitString(strLine, '|');
+				ProcessDomain(FNAME_ACCOUNT, arrLine[0], arrLine[1] + ',' + arrLine[0], arrLine[2]);
+			end;
 		until Eof(f);
 		CloseFile(f);
 	except
@@ -788,18 +818,20 @@ begin
 end; // of procedure Step1Export().
 
 
-{
+
 procedure ProgTest();
 var
 	strDn: string;
-	dtCreated: TDateTime;
+	//dtCreated: TDateTime;
+	strCreated: string;
+	strLastLogonTimestamp: string;
 begin
 	//WriteLn(GetLatestLogonDate('CN=HP_Ian.Webermann,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl'));
 	//strDn := 'CN=Perry.vandenHondel,OU=Accounts,DC=prod,DC=ns,DC=nl';
 	//dtLatest := GetLatestLogonDate(strDn);
 	//WriteLn(' *** Latest logon date time for:', strDn, ': ', DateTimeToStr(dtLatest));
 	
-	
+	{
 	strDn := 'CN=KPN_P.Krishnachar,OU=KPN,OU=Beheer,DC=test,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2014-06-18 13:03:30');
 	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
@@ -815,9 +847,29 @@ begin
 	strDn := 'CN=BEH_Perry.vdHondel,OU=Admin,OU=Beheer,DC=prod,DC=ns,DC=nl';
 	dtCreated := StrToDateTime('2011-10-10 13:39:41');
 	//WriteLn(DateTimeToStr(GetReadLastLogon(strDn, dtCreated)));
+	}
+	
+	
+	WriteLn(DateTimeToStr(StrToDateTimeCheck('')));
+	
+	//CN=hp_marlies.bomers,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl	hp_marlies.bomers	BA HOUSEKEEPING 20150609112955, CALL=651697 REQUEST_BY=Richard.Pijl@hp.com	1049090	hp_marlies.bomers@prod.ns.nl		2015-02-16 08:44:33
+	strDn := 'CN=hp_marlies.bomers,OU=HP,OU=Beheer,DC=prod,DC=ns,DC=nl';
+	strLastLogonTimestamp :=  '';
+	strCreated := '2015-02-16 06:44:33';
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, strCreated, strLastLogonTimestamp)));
+
+	{
+	strDn := 'CN=CSC_Dennis.Thomassen,OU=CSC,OU=Beheer,DC=test,DC=ns,DC=nl';
+	strLastLogonTimestamp :=  '2015-06-09 09:19:13';
+	strCreated := '2011-10-10 13:39:41';
+	WriteLn(DateTimeToStr(GetReadLastLogon(strDn, strCreated, strLastLogonTimestamp)));
+	}
+	//Writeln(DateTimeToStr(GetNewestDateTime(StrToDateTime('2015-01-08 09:00:00'), StrToDateTime('2014-06-18 08:00:47'))));
+	//Writeln(DateTimeToStr(GetNewestDateTime(StrToDateTime('2015-07-01 09:00:00'), StrToDateTime('2015-07-01 09:00:02'))));
+	
 
 end; // of procedure ProgTest()
-}
+
 
 
 procedure ProgInit();
@@ -837,6 +889,7 @@ begin
 	
 	gstrFNameBatch := 'hkba-' + gstrBatchNumber + '.cmd';
 	gstrFNameLog := 'hkba-' + gstrBatchNumber + '.csv';
+	gstrFnameSql := 'hkba-' + gstrBatchNumber + '.sql';
 	
 	// Delete the existing files for this batch.
 	DeleteFile(gstrFNameBatch);
@@ -862,7 +915,16 @@ begin
 	{I+}
 	ReWrite(gtfLog);
 	// Write the header line of the log file.
-	WriteLn(gtfLog, 'DN' + SEPARATOR_LOG + 'Action' + SEPARATOR_LOG + 'lastActionOn' + SEPARATOR_LOG + 'DaysAgo' + SEPARATOR_LOG + 'Domain' + SEPARATOR_LOG + 'SupportOrg' + SEPARATOR_LOG + 'Description');
+	WriteLn(gtfLog, 'DN' + SEPARATOR_LOG + 'SamAccountName' + SEPARATOR_LOG + 'Action' + SEPARATOR_LOG + 'lastActionOn' + SEPARATOR_LOG + 'DaysAgo' + SEPARATOR_LOG + 'Domain' + SEPARATOR_LOG + 'SupportOrg' + SEPARATOR_LOG + 'Description');
+	
+	// Assign and open the SQL export file.
+	AssignFile(gtfSql, gstrFNameSql);
+	{I+}
+	ReWrite(gtfSql);
+	WriteLn(gtfSql, '--');
+	WriteLn(gtfSql, '-- HOUSEKEEPING BEHEER ACCOUNT (HKBA) OF BATCH ' + gstrBatchNumber);
+	WriteLn(gtfSql, '--');
+	WriteLn(gtfSql);
 end; // of procedure ProgInit()
 
 
@@ -874,12 +936,18 @@ begin
 	
 	Step1Export();		// Step 1 Exports all the data to files.
 	Step2Process();		// Step 2 Processes these files.
+	//ProgTest();
+	
 end; // of procedure ProgRun()
 
 
 
 procedure ProgDone();
 begin
+	// Close the SQL export file.
+	CloseFile(gtfSql);
+	
+
 	// Close the log file.
 	CloseFile(gtfLog);
 	
