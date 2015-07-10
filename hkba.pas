@@ -263,6 +263,8 @@ var
 	q: string;
 begin
 	q := 'INSERT INTO account_action ';
+	// 2015-07-10: Fix for issue-1
+	q := q + 'SET ';
 	q := q + 'upn=''' + LowerCase(strUpn) + '''';
 	q := q + ',action_performed=''' + strAction + '''';
 	q := q + ',reference_id=''HKBA-' + gstrBatchNumber + ''';';

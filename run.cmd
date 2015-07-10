@@ -7,10 +7,10 @@
 ::
 ::	Script settings
 ::
-set EXPORT_FILE=export.tmp
+::set EXPORT_FILE=export.tmp
 
 ::echo .
-echo Export to file %EXPORT_FILE%
+::echo Export to file %EXPORT_FILE%
 ::echo .
 
 
@@ -23,7 +23,7 @@ echo Export to file %EXPORT_FILE%
 ::
 ::	Delete existing log file.
 ::
-if exist %EXPORT_FILE% del %EXPORT_FILE%
+::if exist %EXPORT_FILE% del %EXPORT_FILE%
 
 
 ::
@@ -38,20 +38,20 @@ if exist %EXPORT_FILE% del %EXPORT_FILE%
 ::		
 :: org: adfind.exe -b %%d -binenc -f "(&(objectClass=user)(objectCategory=person)(sAMAccountName=SVC_*))" sAMAccountName displayName description userAccountControl lastLogontimeStamp pwdLastSet whenCreated -jtsv -csvnoq -dpdn -tdcs -tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" >>service-accounts.tsv
 ::
-for /f %%d in (rootdse.txt) do (
-	echo Exporting domain %%d
-	adfind.exe -b %%d -binenc -f "(&(objectClass=user)(objectCategory=person))" sAMAccountName description userAccountControl userPrincipalName lastLogontimeStamp whenCreated -jtsv -csvnoq -tdcs -tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" >>%EXPORT_FILE%
-)
+::for /f %%d in (rootdse.txt) do (
+::	echo Exporting domain %%d
+::	adfind.exe -b %%d -binenc -f "(&(objectClass=user)(objectCategory=person))" sAMAccountName description userAccountControl userPrincipalName lastLogontimeStamp whenCreated -jtsv -csvnoq -tdcs -tdcgt -tdcfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" -tdcsfmt "%%YYYY%%-%%MM%%-%%DD%% %%HH%%:%%mm%%:%%ss%%" >>%EXPORT_FILE%
+::)
 
 
 
-echo File created:
-dir %EXPORT_FILE%
+::echo File created:
+::dir %EXPORT_FILE%
 
 
 :: Process export file
-echo Process the file %EXPORT_FILE% with BACLEANUP.EXE
-%0\..\bacleanup.exe
+echo Running program Housekeeping Beheer Account.
+%0\..\hkba.exe
 
 
 echo Script completed...
